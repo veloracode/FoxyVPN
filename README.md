@@ -38,12 +38,6 @@ Jetpack Compose (Material 3) UI.*
 
 <br>
 
-## 📸 Screenshots
-<div align="center">
-</div>
-
-<br>
-
 ## 🚀 How to use?
 
 1. **Get a Firefox account.** If you do not have one, create it for free at
