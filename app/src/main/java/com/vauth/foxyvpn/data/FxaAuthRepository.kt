@@ -1,7 +1,9 @@
 package com.vauth.foxyvpn.data
 
 import android.util.Base64
+import com.vauth.foxyvpn.data.model.BatchImportItemResult
 import com.vauth.foxyvpn.data.model.RuntimeAuth
+import com.vauth.foxyvpn.data.model.VpnAccount
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,7 +13,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Mac
@@ -49,6 +53,11 @@ private const val FIREFOX_CLIENT_ID = "5882386c6d801776"
 private const val OAUTH_SCOPE = "profile https://identity.mozilla.com/apps/vpn"
 private const val PROTOCOL_VERSION = "identity.mozilla.com/picl/v1/"
 private const val FXA_MAX_CHALLENGE_ATTEMPTS = 3
+private const val PBKDF2_ROUNDS = 1000
+private const val STRETCHED_PW_LEN = 32
+private const val HKDF_LEN = 32
+private const val VERIFICATION_METHOD_EMAIL_2FA = "email-2fa"
+private const val FXA_ERRNO_INVALID_PARAMETER = 107
 private const val DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 private const val WEBCHANNEL_LOGIN_URL =
@@ -60,6 +69,7 @@ class FxaAuthRepository(
     private val tokenStore: TokenStore,
     private val challengeSolver: FastlyChallengeSolver = FastlyChallengeSolver(ControlPlaneHttp.cookieJar),
 ) {
+    private var pendingSessionToken: String? = null
     fun getBrowserLoginUrl(): String = WEBCHANNEL_LOGIN_URL
 
     suspend fun completeBrowserLogin(sessionToken: String): Result<Unit> = runCatching {
@@ -67,15 +77,111 @@ class FxaAuthRepository(
         if (!Regex("^[0-9a-f]{64}$").matches(clean)) {
             error("The sign-in page did not hand over a usable session token")
         }
-        completeLogin(clean)
+        completeLogin("", clean)
+    }
+
+    // ------------------------------------------------------------------
+    // Pending sign-in (email verification code). FxA returns new-device
+    // sessions unverified; the emailed OTP code must be submitted to
+    // /session/verify_code before any token can be minted. The pending
+    // session is persisted in TokenStore (see pendingLogin()) — keeping
+    // it only in [pendingSessionToken] lost it whenever the process died
+    // while the user was reading the code in their mail app, which made
+    // the code step a dead end ("No pending FxA session").
+    // ------------------------------------------------------------------
+
+    enum class PendingKind { LEGACY, ACCOUNT }
+
+    data class PendingLogin(val email: String, val sessionToken: String, val kind: PendingKind)
+
+    /** The pending verification-code sign-in, if any. Survives process death. */
+    fun pendingLogin(): PendingLogin? {
+        val stored = tokenStore.loadPendingLogin()
+        if (stored != null) {
+            val kind = runCatching { PendingKind.valueOf(stored.third) }.getOrDefault(PendingKind.LEGACY)
+            return PendingLogin(stored.first, stored.second, kind)
+        }
+        val token = pendingSessionToken ?: return null
+        return PendingLogin(email = "", sessionToken = token, kind = PendingKind.LEGACY)
+    }
+
+    /** Drops the pending sign-in (the server-side session is left to expire). */
+    fun abandonPendingLogin() {
+        pendingSessionToken = null
+        tokenStore.clearPendingLogin()
+    }
+
+    private fun setPending(email: String, sessionToken: String, kind: PendingKind) {
+        pendingSessionToken = sessionToken
+        tokenStore.savePendingLogin(email, sessionToken, kind.name)
+    }
+
+    private fun clearPending() {
+        pendingSessionToken = null
+        tokenStore.clearPendingLogin()
+    }
+
+    private fun requirePending(): PendingLogin =
+        pendingLogin() ?: error("No pending sign-in. Start again so a new code can be sent.")
+
+    /** Submits the emailed code for the pending session (FxA: POST /session/verify_code). */
+    private suspend fun verifySessionWithCode(sessionToken: String, code: String) {
+        val cleanCode = sanitizeCode(code)
+        require(cleanCode.isNotEmpty()) { "Enter the confirmation code from the email." }
+        fxaDo("POST", "/session/verify_code", sessionToken = sessionToken, jsonBody = JSONObject().put("code", cleanCode))
+    }
+
+    /** Asks FxA to email a fresh code for the pending session (POST /session/resend_code). */
+    suspend fun resendPendingCode(): Result<Unit> = runCatching {
+        val pending = requirePending()
+        fxaDo("POST", "/session/resend_code", sessionToken = pending.sessionToken, jsonBody = JSONObject())
+        Unit
+    }
+
+    companion object {
+        fun normalizeEmail(email: String): String =
+            email.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").trim().lowercase()
+
+        fun sanitizeCode(code: String): String =
+            code.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").trim()
+    }
+
+    suspend fun startLogin(email: String, password: String): Result<Boolean> = runCatching {
+        val cleanEmail = normalizeEmail(email)
+        val data = loginAttempt(cleanEmail, password)
+        val sessionToken = data.getString("sessionToken")
+        val verified = data.optBoolean("verified", false)
+        if (!verified) {
+            setPending(cleanEmail, sessionToken, PendingKind.LEGACY)
+            true
+        } else {
+            completeLogin(cleanEmail, sessionToken)
+            false
+        }
+    }
+
+    /**
+     * Completes whichever sign-in is pending (legacy single session or an
+     * account add/import) by submitting the emailed verification code.
+     */
+    suspend fun submitTwoFactorCode(code: String): Result<Boolean> = runCatching {
+        val pending = requirePending()
+        verifySessionWithCode(pending.sessionToken, code)
+        when (pending.kind) {
+            PendingKind.LEGACY -> completeLogin(pending.email, pending.sessionToken)
+            PendingKind.ACCOUNT -> completePendingAccount(pending)
+        }
+        false
     }
 
     suspend fun restoreSession(): SessionStatus {
         val stored = runCatching { tokenStore.loadAuth() }.getOrNull()
-            ?: return SessionStatus.NEEDS_LOGIN
+            ?: return if (tokenStore.hasAnyAccount()) SessionStatus.ACTIVE else SessionStatus.NEEDS_LOGIN
         if (stored.refreshToken == null && !tokenStore.hasValidAccessToken()) {
-            runCatching { tokenStore.clear() }
-            return SessionStatus.NEEDS_LOGIN
+            // Dead legacy session: drop ONLY its keys. The multi-account
+            // list must survive — each VpnAccount carries its own auth.
+            runCatching { tokenStore.clearLegacySession() }
+            return if (tokenStore.hasAnyAccount()) SessionStatus.ACTIVE else SessionStatus.NEEDS_LOGIN
         }
         if (tokenStore.hasValidAccessToken()) return SessionStatus.ACTIVE
 
@@ -87,8 +193,8 @@ class FxaAuthRepository(
         } catch (failure: FxaRefreshFailure) {
             if (failure.permanent) {
                 AppLogger.w(TAG, "FxA rejected the stored session; signing out", failure)
-                runCatching { tokenStore.clear() }
-                SessionStatus.NEEDS_LOGIN
+                runCatching { tokenStore.clearLegacySession() }
+                return if (tokenStore.hasAnyAccount()) SessionStatus.ACTIVE else SessionStatus.NEEDS_LOGIN
             } else {
                 AppLogger.w(TAG, "could not renew the session right now; staying signed in", failure)
                 SessionStatus.UNREACHABLE
@@ -104,6 +210,29 @@ class FxaAuthRepository(
             ?: throw FxaRefreshFailure("Not signed in", permanent = true)
         if (!force && tokenStore.hasValidAccessToken()) return current
 
+        val renewed = refreshAuth(current)
+        runCatching { tokenStore.saveAuth(renewed) }
+            .onFailure { AppLogger.w(TAG, "could not persist the renewed token", it) }
+        return renewed
+    }
+
+    /**
+     * Per-account variant used by the multi-account patch: refreshes the given
+     * account's tokens through the same FxA grant as [ensureFreshAccessToken]
+     * but does NOT touch the legacy single-session store. The caller persists
+     * the returned auth (e.g. via TokenStore.updateAccount).
+     */
+    suspend fun ensureFreshAccessTokenForAccount(account: VpnAccount, force: Boolean = false): RuntimeAuth {
+        val current = account.auth
+        if (!force) {
+            val nowSeconds = System.currentTimeMillis() / 1000
+            if (current.expiresAtEpochSeconds - nowSeconds > 60L) return current
+        }
+        return refreshAuth(current)
+    }
+
+    /** Shared refresh-grant implementation; pure w.r.t. storage. */
+    private suspend fun refreshAuth(current: RuntimeAuth): RuntimeAuth {
         val refreshToken = current.refreshToken
             ?: throw FxaRefreshFailure(
                 "The stored session has no refresh token; sign in again.",
@@ -145,14 +274,11 @@ class FxaAuthRepository(
                 permanent = false,
             )
 
-        val renewed = RuntimeAuth(
+        return RuntimeAuth(
             accessToken = accessToken,
             refreshToken = tokenData.optString("refresh_token", "").ifBlank { null } ?: refreshToken,
             expiresAtEpochSeconds = expiryFrom(tokenData),
         )
-        runCatching { tokenStore.saveAuth(renewed) }
-            .onFailure { AppLogger.w(TAG, "could not persist the renewed token", it) }
-        return renewed
     }
 
     suspend fun currentAccessToken(): String? = try {
@@ -162,6 +288,224 @@ class FxaAuthRepository(
     } catch (failure: FxaRefreshFailure) {
         if (failure.permanent) null else tokenStore.loadAuth()?.accessToken
     }
+
+    // ------------------------------------------------------------------
+    // Batch import (multi-account patch). Every login goes through the
+    // existing FxA crypto path above (loginAttempt/oauthToken/refreshAuth);
+    // no new auth logic is introduced here.
+    // ------------------------------------------------------------------
+
+    data class BatchParsedItem(
+        val raw: String,
+        val email: String,
+        val password: String? = null,
+        val accessToken: String? = null,
+        val refreshToken: String? = null,
+    )
+
+    /**
+     * Accepts a JSON array of {"email", "password"? , "accessToken"/"access_token"?,
+     * "refreshToken"/"refresh_token"?} objects, one JSON object per line, or
+     * line-based "email:password" / "email|password" / "email password" entries.
+     */
+    fun parseBatchInput(rawText: String): List<BatchParsedItem> {
+        val items = mutableListOf<BatchParsedItem>()
+        val trimmed = rawText.trim()
+        if (trimmed.isEmpty()) return items
+
+        fun fromJsonObject(obj: JSONObject, raw: String): BatchParsedItem? {
+            val email = obj.optString("email").trim().ifBlank { return null }
+            return BatchParsedItem(
+                raw = raw,
+                email = email,
+                password = obj.optString("password").ifBlank { null },
+                accessToken = obj.optString("accessToken").ifBlank { null }
+                    ?: obj.optString("access_token").ifBlank { null },
+                refreshToken = obj.optString("refreshToken").ifBlank { null }
+                    ?: obj.optString("refresh_token").ifBlank { null },
+            )
+        }
+
+        if (trimmed.startsWith("[")) {
+            val arr = runCatching { JSONArray(trimmed) }.getOrNull() ?: return items
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                fromJsonObject(obj, obj.toString())?.let { items += it }
+            }
+            return items
+        }
+
+        for (line in trimmed.lines()) {
+            val entry = line.trim()
+            if (entry.isEmpty()) continue
+            if (entry.startsWith("{")) {
+                val obj = runCatching { JSONObject(entry) }.getOrNull() ?: continue
+                fromJsonObject(obj, entry)?.let { items += it }
+                continue
+            }
+            val parts = entry.split(Regex("[:|\\t ]+"), limit = 2).map { it.trim() }
+            if (parts.size == 2 && parts[0].contains("@")) {
+                items += BatchParsedItem(raw = entry, email = parts[0], password = parts[1].ifBlank { null })
+            } else if (parts.size == 1 && entry.contains("@")) {
+                items += BatchParsedItem(raw = entry, email = entry)
+            }
+        }
+        return items
+    }
+
+    /** Outcome of starting an account sign-in (add-account / batch item). */
+    sealed interface AccountLoginStep {
+        data class Completed(val account: VpnAccount) : AccountLoginStep
+        data class NeedsCode(val email: String) : AccountLoginStep
+    }
+
+    /**
+     * Starts a sign-in whose result is a stored [VpnAccount]. When FxA
+     * returns the session unverified (the normal case for a new device now),
+     * the session is kept as the pending login and [AccountLoginStep.NeedsCode]
+     * is returned; finish it with [submitPendingAccountCode].
+     */
+    suspend fun beginAccountLogin(email: String, password: String): Result<AccountLoginStep> = runCatching {
+        val cleanEmail = normalizeEmail(email)
+        val data = loginAttempt(cleanEmail, password)
+        val sessionToken = data.getString("sessionToken")
+        val verified = data.optBoolean("verified", false)
+        if (!verified) {
+            setPending(cleanEmail, sessionToken, PendingKind.ACCOUNT)
+            AccountLoginStep.NeedsCode(cleanEmail)
+        } else {
+            finishAccountLogin(cleanEmail, sessionToken)
+        }
+    }
+
+    /** Verifies the pending account sign-in with the emailed code and stores the account. */
+    suspend fun submitPendingAccountCode(code: String): Result<VpnAccount> = runCatching {
+        val pending = requirePending()
+        check(pending.kind == PendingKind.ACCOUNT) { "The pending sign-in is not an account sign-in." }
+        verifySessionWithCode(pending.sessionToken, code)
+        completePendingAccount(pending)
+    }
+
+    private suspend fun completePendingAccount(pending: PendingLogin): VpnAccount {
+        val completed = finishAccountLogin(pending.email, pending.sessionToken)
+        clearPending()
+        return completed.account
+    }
+
+    /** Mints the OAuth tokens for a verified session and stores the account. */
+    private suspend fun finishAccountLogin(email: String, sessionToken: String): AccountLoginStep.Completed {
+        val tokenData = oauthToken(sessionToken)
+        val account = VpnAccount(
+            email = email,
+            auth = RuntimeAuth(
+                accessToken = tokenData.getString("access_token"),
+                refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
+                expiresAtEpochSeconds = expiryFrom(tokenData),
+            ),
+        )
+        tokenStore.addAccount(account)
+        return AccountLoginStep.Completed(account)
+    }
+
+    /** One step of the guided batch import for a single parsed entry. */
+    sealed interface GuidedImportStep {
+        data class Done(val result: BatchImportItemResult) : GuidedImportStep
+        data class NeedsCode(val item: BatchParsedItem) : GuidedImportStep
+    }
+
+    /**
+     * Imports one batch entry. Password entries that FxA leaves unverified
+     * come back as [GuidedImportStep.NeedsCode] with the session kept pending;
+     * the caller collects the code (see [submitPendingAccountCode]) and then
+     * moves on to the next entry. Token entries never need a code.
+     */
+    suspend fun importBatchItem(item: BatchParsedItem): GuidedImportStep {
+        if (!item.password.isNullOrBlank()) {
+            return when (val step = beginAccountLogin(item.email, item.password).getOrElse { failure ->
+                if (failure is CancellationException) throw failure
+                return GuidedImportStep.Done(
+                    BatchImportItemResult(item.email, success = false, error = failure.message ?: "Import failed"),
+                )
+            }) {
+                is AccountLoginStep.Completed ->
+                    GuidedImportStep.Done(BatchImportItemResult(item.email, success = true, account = step.account))
+                is AccountLoginStep.NeedsCode -> GuidedImportStep.NeedsCode(item)
+            }
+        }
+        val result = runCatching {
+            val auth = when {
+                !item.accessToken.isNullOrBlank() -> {
+                    val provisional = RuntimeAuth(
+                        accessToken = item.accessToken,
+                        refreshToken = item.refreshToken,
+                        expiresAtEpochSeconds = 0L,
+                    )
+                    ensureFreshAccessTokenForAccount(
+                        VpnAccount(email = item.email, auth = provisional),
+                        force = true,
+                    )
+                }
+                else -> error("No password or access token provided for this entry.")
+            }
+            val account = VpnAccount(email = normalizeEmail(item.email), auth = auth)
+            tokenStore.addAccount(account)
+            BatchImportItemResult(identifier = item.email, success = true, account = account)
+        }.getOrElse { failure ->
+            if (failure is CancellationException) throw failure
+            BatchImportItemResult(
+                identifier = item.email,
+                success = false,
+                error = failure.message ?: "Import failed",
+            )
+        }
+        return GuidedImportStep.Done(result)
+    }
+
+    /**
+     * Non-interactive batch import: every entry is attempted in order and
+     * entries that need an email verification code are reported as failures
+     * (the pending session is dropped). The interactive flows use
+     * [importBatchItem] instead so the user can enter each code.
+     */
+    suspend fun batchImportAccounts(
+        rawText: String,
+        onProgress: (current: Int, total: Int, label: String) -> Unit = { _, _, _ -> },
+    ): List<BatchImportItemResult> {
+        val items = parseBatchInput(rawText)
+        val results = mutableListOf<BatchImportItemResult>()
+        items.forEachIndexed { index, item ->
+            onProgress(index + 1, items.size, item.email)
+            val result = when (val step = importBatchItem(item)) {
+                is GuidedImportStep.Done -> step.result
+                is GuidedImportStep.NeedsCode -> {
+                    abandonPendingLogin()
+                    BatchImportItemResult(
+                        identifier = item.email,
+                        success = false,
+                        error = "This account needs an email verification code; use the guided import to enter it.",
+                    )
+                }
+            }
+            results += result
+        }
+        return results
+    }
+
+    /**
+     * Logs one account in and stores it in [TokenStore]. Strict variant of
+     * [beginAccountLogin]: fails when FxA asks for an email verification
+     * code (interactive callers use begin/submit so the code can be typed).
+     */
+    suspend fun loginSingleAccount(email: String, password: String): Result<VpnAccount> =
+        beginAccountLogin(email, password).map { step ->
+            when (step) {
+                is AccountLoginStep.Completed -> step.account
+                is AccountLoginStep.NeedsCode -> {
+                    abandonPendingLogin()
+                    error("This account needs an email verification code to finish signing in.")
+                }
+            }
+        }
 
     suspend fun refreshAccessToken(): RuntimeAuth? = try {
         ensureFreshAccessToken(force = true)
@@ -182,15 +526,42 @@ class FxaAuthRepository(
         return System.currentTimeMillis() / 1000 + expiresIn
     }
 
-    private suspend fun completeLogin(sessionToken: String) {
+    private suspend fun completeLogin(email: String, sessionToken: String) {
         val tokenData = oauthToken(sessionToken)
-        tokenStore.saveAuth(
-            RuntimeAuth(
-                accessToken = tokenData.getString("access_token"),
-                refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
-                expiresAtEpochSeconds = expiryFrom(tokenData),
-            ),
+        val auth = RuntimeAuth(
+            accessToken = tokenData.getString("access_token"),
+            refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
+            expiresAtEpochSeconds = expiryFrom(tokenData),
         )
+        tokenStore.saveAuth(auth)
+        // The main sign-in must also land in the multi-account list: without
+        // this the account connects via the legacy session but never appears
+        // in the Accounts screen (no name, quota or disable toggle).
+        // addAccount upserts by email, so a re-login replaces the existing
+        // entry instead of duplicating it. A resumed legacy pending login
+        // may carry no email (bare-token restore) — then there is nothing
+        // sensible to register and the session save above is enough.
+        if (email.isNotBlank()) {
+            tokenStore.addAccount(VpnAccount(email = email, auth = auth))
+        }
+        clearPending()
+    }
+
+    private suspend fun loginAttempt(email: String, password: String, withVerificationMethod: Boolean = true): JSONObject {
+        val body = JSONObject().apply {
+            put("email", email)
+            put("authPW", deriveAuthPw(email, password))
+            if (withVerificationMethod) put("verificationMethod", VERIFICATION_METHOD_EMAIL_2FA)
+        }
+        return try {
+            fxaDo("POST", "/account/login", jsonBody = body)
+        } catch (e: FxaApiError) {
+            if (e.errno == FXA_ERRNO_INVALID_PARAMETER && withVerificationMethod) {
+                loginAttempt(email, password, withVerificationMethod = false)
+            } else {
+                throw e
+            }
+        }
     }
 
     private suspend fun oauthToken(sessionToken: String): JSONObject {
@@ -275,6 +646,29 @@ class FxaAuthRepository(
         }
     }
 
+    private suspend fun fxaDo(
+        method: String,
+        path: String,
+        sessionToken: String? = null,
+        jsonBody: JSONObject,
+    ): JSONObject = executeFxaRequest(
+        baseUrl = FXA_AUTH_SERVER,
+        path = path,
+        method = method,
+        jsonBody = jsonBody,
+        sessionToken = sessionToken,
+    )
+
+    private fun deriveQuickStretch(email: String, password: String): ByteArray {
+        val salt = "${PROTOCOL_VERSION}quickStretch:$email".toByteArray(Charsets.UTF_8)
+        return pbkdf2HmacSha256(password.toByteArray(Charsets.UTF_8), salt, PBKDF2_ROUNDS, STRETCHED_PW_LEN)
+    }
+
+    private fun deriveAuthPw(email: String, password: String): String {
+        val quickStretched = deriveQuickStretch(email, password)
+        return hkdf(quickStretched, "${PROTOCOL_VERSION}authPW", HKDF_LEN).toHex()
+    }
+
     private fun deriveHawkCredentials(sessionTokenHex: String): Pair<String, ByteArray> {
         val sessionToken = sessionTokenHex.hexToBytes()
         val expanded = hkdf(sessionToken, "${PROTOCOL_VERSION}sessionToken", 64)
@@ -311,6 +705,24 @@ private const val FRIENDLY_406_MESSAGE =
     "Mozilla's bot protection rejected this request (HTTP 406) and the automatic " +
         "challenge could not be completed on this network. Please switch networks " +
         "(Wi-Fi <-> mobile data) and try again."
+
+private fun pbkdf2HmacSha256(password: ByteArray, salt: ByteArray, iterations: Int, keyLengthBytes: Int): ByteArray {
+    val hLen = 32
+    val numBlocks = (keyLengthBytes + hLen - 1) / hLen
+    val result = ByteArray(numBlocks * hLen)
+    val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(password, "HmacSHA256")) }
+    for (blockIndex in 1..numBlocks) {
+        val blockIndexBytes = ByteBuffer.allocate(4).putInt(blockIndex).array()
+        var u = mac.doFinal(salt + blockIndexBytes)
+        val t = u.copyOf()
+        for (iter in 2..iterations) {
+            u = mac.doFinal(u)
+            for (i in t.indices) t[i] = (t[i].toInt() xor u[i].toInt()).toByte()
+        }
+        System.arraycopy(t, 0, result, (blockIndex - 1) * hLen, hLen)
+    }
+    return result.copyOf(keyLengthBytes)
+}
 
 private fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
     val mac = Mac.getInstance("HmacSHA256")
