@@ -24,7 +24,7 @@ jobs:
           packages: "platform-tools"
 
       - name: Install NDK
-run: |
+        run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           sdkmanager --install "ndk;26.1.10909125"
 
@@ -67,7 +67,7 @@ run: |
           packages: "platform-tools"
 
       - name: Install NDK
-run: |
+        run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           sdkmanager --install "ndk;26.1.10909125"
 
