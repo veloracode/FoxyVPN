@@ -188,7 +188,6 @@ fun HomeScreen(
                 // One shared footer for every home design (Pixel / Portal /
                 // Classic): they all render inside this Scaffold, so the
                 // badge below shows whichever design is chosen.
-                MadeByBadge()
                 FoxyBottomBar(
                     style = appearance.navBarStyle,
                     current = FoxyDestination.Home,
@@ -230,49 +229,6 @@ fun HomeScreen(
     }
 }
 
-/**
- * The makers' badge: a small gradient pill centered at the bottom of the
- * Home screen, above the navigation bar. Pure decoration — it holds no
- * state and touches no connection logic.
- */
-@Composable
-private fun MadeByBadge() {
-    val cs = MaterialTheme.colorScheme
-    val gradient = Brush.horizontalGradient(
-        listOf(cs.primary, cs.tertiary, cs.secondary, cs.primary),
-    )
-    Box(
-        modifier = Modifier
-            .padding(top = 6.dp, bottom = 2.dp)
-            .clip(RoundedCornerShape(50))
-            .border(1.dp, gradient, RoundedCornerShape(50))
-            .background(cs.surfaceContainer.copy(alpha = 0.65f))
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "✦",
-                style = MaterialTheme.typography.labelMedium,
-                color = cs.tertiary,
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                style = MaterialTheme.typography.labelLarge.copy(
-                    brush = gradient,
-                    fontWeight = FontWeight.SemiBold,
-                ),
-                maxLines = 1,
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "✦",
-                style = MaterialTheme.typography.labelMedium,
-                color = cs.tertiary,
-            )
-        }
-    }
-}
 
 private data class HomeContentData(
     val state: ConnectionState,

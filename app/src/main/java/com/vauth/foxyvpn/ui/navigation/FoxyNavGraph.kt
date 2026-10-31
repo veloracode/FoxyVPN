@@ -105,6 +105,7 @@ fun FoxyNavGraph(
                 settingsStore = app.settingsStore,
                 appearance = appearance,
                 onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
+                onOpenAccount = { navController.navigate(FoxyRoutes.ACCOUNT) },
                 onSignOut = {
                     onDisconnect()
                     app.tokenStore.clear()
