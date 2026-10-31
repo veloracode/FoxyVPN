@@ -1,5 +1,7 @@
 package com.vauth.foxyvpn.ui.screens
 
+import com.vauth.foxyvpn.ui.l10n.s
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -67,6 +69,7 @@ private suspend fun writeLogFile(context: Context): File = withContext(Dispatche
 fun LogsScreen(onBack: () -> Unit) {
     val entries by AppLogger.entries.collectAsState()
     val context = LocalContext.current
+    val logsClipLabel = s("FoxyVPN logs")
     val scope = rememberCoroutineScope()
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     var filter by remember { mutableStateOf(LogFilter.ALL) }
@@ -122,7 +125,7 @@ fun LogsScreen(onBack: () -> Unit) {
                     }
                     IconButton(onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("FoxyVPN logs", AppLogger.exportAsText()))
+                        clipboard.setPrimaryClip(ClipData.newPlainText(logsClipLabel, AppLogger.exportAsText()))
                     }) {
                         Icon(Icons.Filled.ContentCopy, contentDescription = "Copy logs")
                     }
