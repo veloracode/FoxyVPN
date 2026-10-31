@@ -3,7 +3,6 @@
 # FoxyVPN - Unofficial Firefox VPN client
 
 <p align="center">
-  <img src="https://i.ibb.co/8D9KdmNk/6a07263d16c0.png" alt="FoxyVPN Logo" width="150"/>
 </p>
 
 ![Android](https://img.shields.io/badge/Android-212121?style=for-the-badge&logo=android&logoColor=white)
@@ -41,9 +40,6 @@ Jetpack Compose (Material 3) UI.*
 
 ## 📸 Screenshots
 <div align="center">
-  <img src="https://i.ibb.co/cK1L8wGk/90a25df7e3c6.jpg" alt="Screenshot 1" width="30%">
-  <img src="https://i.ibb.co/tMff3B7C/198e4f622a58.jpg" alt="Screenshot 2" width="30%">
-  <img src="https://i.ibb.co/G3V0CwCb/8524a888adee.jpg" alt="Screenshot 3" width="30%">
 </div>
 
 <br>
@@ -52,7 +48,7 @@ Jetpack Compose (Material 3) UI.*
 
 1. **Get a Firefox account.** If you do not have one, create it for free at
    [accounts.firefox.com](https://accounts.firefox.com/signup).
-2. **Install the APK** from the [Releases](https://github.com/vauth/foxyvpn/releases)
+2. **Install the APK** from the [Releases](https://github.com/veloracode/FoxyVPN/releases)
    page.
 3. **Sign in** with that account's email and password.
 4. **Pick a location** and tap the power button.
@@ -77,7 +73,7 @@ allowance is used up for the month, connections stop working until it resets.
 ## ⚙️ Build
 * #### Clone Repository:
 ```bash
-git clone https://github.com/vauth/foxyvpn.git
+git clone https://github.com/veloracode/FoxyVPN.git
 cd foxyvpn
    ```
 * #### Build and Install:

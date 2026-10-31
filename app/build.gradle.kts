@@ -44,11 +44,11 @@ android {
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
-        applicationId = "com.vauth.foxyvpn"
+        applicationId = "com.veloracode.foxyvpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 45
-        versionName = "1.0.8"
+        versionCode = 46
+        versionName = "1.1.0"
 
         externalNativeBuild {
             ndkBuild {
@@ -70,6 +70,14 @@ android {
     }
 
     signingConfigs {
+        // Use a committed debug keystore so every CI build has a stable
+        // signature (debug keys are not sensitive).
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (hasReleaseSigning) {
             create("release") {
                 storeFile = releaseKeystoreFile
@@ -81,6 +89,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -129,6 +140,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3:1.4.0-alpha10")
+    implementation("androidx.graphics:graphics-shapes:1.0.0")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.navigation:navigation-compose:2.8.5")
