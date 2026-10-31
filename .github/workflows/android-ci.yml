@@ -24,7 +24,9 @@ jobs:
           packages: "platform-tools"
 
       - name: Install NDK
-        run: sdkmanager --install "ndk;26.1.10909125"
+run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          sdkmanager --install "ndk;26.1.10909125"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -65,7 +67,9 @@ jobs:
           packages: "platform-tools"
 
       - name: Install NDK
-        run: sdkmanager --install "ndk;26.1.10909125"
+run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          sdkmanager --install "ndk;26.1.10909125"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4

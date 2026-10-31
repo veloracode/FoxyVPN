@@ -20,6 +20,7 @@ jobs:
 
       - name: Install platform, build-tools and NDK
         run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125"
 
