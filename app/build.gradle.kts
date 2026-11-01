@@ -127,4 +127,8 @@ dependencies {
     implementation("com.google.errorprone:error_prone_annotations:2.27.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Fork addition: JUnit for the carried unit tests (upstream v2
+    // ships no unit tests and declares no test dependency).
+    testImplementation("junit:junit:4.13.2")
 }
