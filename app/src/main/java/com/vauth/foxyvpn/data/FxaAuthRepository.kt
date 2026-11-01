@@ -306,7 +306,9 @@ class FxaAuthRepository(
     /**
      * Accepts a JSON array of {"email", "password"? , "accessToken"/"access_token"?,
      * "refreshToken"/"refresh_token"?} objects, one JSON object per line, or
-     * line-based "email:password" / "email|password" / "email password" entries.
+     * line-based entries separated by "----", ":", "|", ",", ";" or whitespace
+     * ("email:password", "email----password", ...). The password keeps the
+     * rest of the line, so it may itself contain ":" or ",".
      */
     fun parseBatchInput(rawText: String): List<BatchParsedItem> {
         val items = mutableListOf<BatchParsedItem>()
@@ -335,13 +337,32 @@ class FxaAuthRepository(
             return items
         }
 
-        for (line in trimmed.lines()) {
+        lineLoop@ for (line in trimmed.lines()) {
             val entry = line.trim()
             if (entry.isEmpty()) continue
             if (entry.startsWith("{")) {
                 val obj = runCatching { JSONObject(entry) }.getOrNull() ?: continue
                 fromJsonObject(obj, entry)?.let { items += it }
                 continue
+            }
+            // "----", "," and ";" are tried before the generic split below:
+            // the generic character class does not contain them, so a line
+            // like "email----password" used to be read as one long email
+            // with no password. The candidate address must be a bare email
+            // (no other separator inside it), so "email,password:with:colon"
+            // keeps "password:with:colon" whole and "email:pass,word" still
+            // splits on the ":" as before.
+            for (sep in listOf("----", ",", ";")) {
+                val idx = entry.indexOf(sep)
+                if (idx <= 0) continue
+                val emailPart = entry.substring(0, idx).trim()
+                val passwordPart = entry.substring(idx + sep.length).trim()
+                val bareEmail = emailPart.contains("@") &&
+                    emailPart.none { it == ':' || it == '|' || it == ',' || it == ';' || it.isWhitespace() }
+                if (bareEmail && passwordPart.isNotEmpty()) {
+                    items += BatchParsedItem(raw = entry, email = emailPart, password = passwordPart)
+                    continue@lineLoop
+                }
             }
             val parts = entry.split(Regex("[:|\\t ]+"), limit = 2).map { it.trim() }
             if (parts.size == 2 && parts[0].contains("@")) {
