@@ -211,7 +211,7 @@ class FxaAuthRepository(
                 return BatchParsedItem(
                     raw = raw,
                     email = email,
-                    password=<redacted>
+                    password = obj.optString("password").ifBlank { null },
                     accessToken = obj.optString("accessToken").ifBlank { null }
                         ?: obj.optString("access_token").ifBlank { null },
                     refreshToken = obj.optString("refreshToken").ifBlank { null }
