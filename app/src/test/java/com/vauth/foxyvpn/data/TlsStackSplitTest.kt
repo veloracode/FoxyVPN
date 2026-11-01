@@ -108,37 +108,50 @@ class TlsStackSplitTest {
         )
     }
 
+
+    /** The first TLS record of a captured stream (a ClientHello). */
+    private fun helloRecord(wire: ByteArray): ByteArray {
+        assertTrue("no ClientHello captured", wire.size > 60)
+        val recordLength = ((wire[3].toInt() and 0xFF) shl 8) or (wire[4].toInt() and 0xFF)
+        assertTrue("record fits the capture", wire.size >= 5 + recordLength)
+        return wire.copyOf(5 + recordLength)
+    }
+
     @Test
     fun sniMode_realTlsStack_helloLeavesSplitInsideTheSni() {
         val capture = captureHello(SettingsStore.TlsSplitMode.SNI)
-        val hello = capture.wireBytes
-        assertTrue("no ClientHello captured", hello.size > 60)
-        assertEquals(0x16, hello[0].toInt() and 0xFF)
+        val record = helloRecord(capture.wireBytes)
+        assertEquals(0x16, record[0].toInt() and 0xFF)
         assertTrue(
             "SNI name on the wire",
-            hello.toString(Charsets.ISO_8859_1).contains("api.accounts.firefox.com"),
+            record.toString(Charsets.ISO_8859_1).contains("api.accounts.firefox.com"),
         )
-        // The splitter's segments are the first writes: 61 bytes up to
-        // the first SNI byte, the first hostname byte alone, then the
-        // rest of the hello (the reassembled stream is the wire bytes).
+        // The expected split points come from the splitter's own parse
+        // of the captured hello (a real TLS 1.3 hello carries many
+        // extensions before the server_name, so the offset is whatever
+        // the parse says — 153 on this JSSE — not a fixed constant).
+        val sni = com.vauth.foxyvpn.vpn.upstream.TlsClientHelloSplitter.findSniOffset(record)
+        assertTrue("SNI offset found in the captured hello", sni != null)
         assertTrue("write sizes were ${capture.writeSizes}", capture.writeSizes.size >= 3)
-        assertEquals(61, capture.writeSizes[0])
+        assertEquals(sni!!.first, capture.writeSizes[0])
         assertEquals(1, capture.writeSizes[1])
-        val segmentsBytes = capture.writeSizes.take(3).sum()
-        assertTrue(segmentsBytes <= hello.size)
-        // The split stream is lossless: what the splitter wrote is
-        // byte-identical to what arrived on the wire.
-        assertArrayEquals(hello, capture.recordedBytes)
+        assertEquals(record.size, capture.writeSizes.take(3).sum())
+        // The split stream is lossless over the record.
+        assertArrayEquals(record, capture.recordedBytes.copyOf(record.size))
     }
 
     @Test
     fun offMode_realTlsStack_helloLeavesUnmodified() {
         val capture = captureHello(SettingsStore.TlsSplitMode.OFF)
-        val hello = capture.wireBytes
-        assertTrue("no ClientHello captured", hello.size > 60)
-        assertEquals(0x16, hello[0].toInt() and 0xFF)
-        // What passed through the (inactive) splitter is byte-identical
-        // to what arrived on the wire.
-        assertArrayEquals(hello, capture.recordedBytes)
+        val record = helloRecord(capture.wireBytes)
+        assertEquals(0x16, record[0].toInt() and 0xFF)
+        // The bytes pass through byte-identical, and no write boundary
+        // falls at either point where SNI mode would have split.
+        assertArrayEquals(record, capture.recordedBytes.copyOf(record.size))
+        val sni = com.vauth.foxyvpn.vpn.upstream.TlsClientHelloSplitter.findSniOffset(record)
+        assertTrue("SNI offset found in the captured hello", sni != null)
+        val boundaries = capture.writeSizes.runningFold(0) { acc, size -> acc + size }.drop(1).dropLast(1)
+        assertTrue("no split at ${sni!!.first} in $boundaries", sni.first !in boundaries)
+        assertTrue("no split at ${sni.first + 1} in $boundaries", (sni.first + 1) !in boundaries)
     }
 }
