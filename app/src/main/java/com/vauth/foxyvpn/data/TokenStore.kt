@@ -84,7 +84,14 @@ class TokenStore(context: Context) {
 
     fun hasRefreshToken(): Boolean = loadAuth()?.refreshToken != null
 
-    fun clear() {
+    /**
+     * FULL wipe of every stored account, the legacy session, the pending
+     * sign-in and all usage stats. Only for the explicit global sign-out —
+     * per-account removal is [removeAccount], and a dead legacy session is
+     * dropped with [clearLegacySession]; neither of those may call this.
+     */
+    @Synchronized
+    fun clearAll() {
         prefs.edit().clear().apply()
         usagePrefs.edit().clear().apply()
         _usageFlow.value = emptyMap()
@@ -154,6 +161,14 @@ class TokenStore(context: Context) {
 
     fun hasAnyAccount(): Boolean = _accountsFlow.value.isNotEmpty()
 
+    // The account mutators below are @Synchronized: each does a
+    // read-modify-write of _accountsFlow (read the list, change it, save it),
+    // and they are called from several coroutines at once (account screen,
+    // VPN service, quota refresh). Unsynchronized, two writers could read
+    // the same list and one update would silently overwrite the other.
+    // JVM monitors are reentrant, so the nested saveAccounts calls are fine.
+
+    @Synchronized
     fun saveAccounts(accounts: List<VpnAccount>) {
         val encoded = runCatching {
             accountsJson.encodeToString(ListSerializer(VpnAccount.serializer()), accounts)
@@ -165,6 +180,7 @@ class TokenStore(context: Context) {
         _accountsFlow.value = accounts
     }
 
+    @Synchronized
     fun addAccount(account: VpnAccount) {
         val current = _accountsFlow.value.toMutableList()
         current.removeAll { it.id == account.id || it.email.equals(account.email, ignoreCase = true) }
@@ -172,6 +188,7 @@ class TokenStore(context: Context) {
         saveAccounts(current)
     }
 
+    @Synchronized
     fun addAccounts(accounts: List<VpnAccount>) {
         if (accounts.isEmpty()) return
         val current = _accountsFlow.value.toMutableList()
@@ -182,15 +199,18 @@ class TokenStore(context: Context) {
         saveAccounts(current)
     }
 
+    @Synchronized
     fun removeAccount(id: String) {
         saveAccounts(_accountsFlow.value.filterNot { it.id == id })
         resetUsedBytes(id)
     }
 
+    @Synchronized
     fun toggleAccount(id: String, enabled: Boolean) {
         saveAccounts(_accountsFlow.value.map { if (it.id == id) it.copy(isEnabled = enabled) else it })
     }
 
+    @Synchronized
     fun updateAccount(account: VpnAccount) {
         saveAccounts(_accountsFlow.value.map { if (it.id == account.id) account else it })
     }

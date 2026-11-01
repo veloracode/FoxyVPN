@@ -108,7 +108,7 @@ fun FoxyNavGraph(
                 onOpenAccount = { navController.navigate(FoxyRoutes.ACCOUNT) },
                 onSignOut = {
                     onDisconnect()
-                    app.tokenStore.clear()
+                    app.tokenStore.clearAll()
                     app.settingsStore.clearAccountSession()
                     app.proxyStateStore.clear()
                     navController.navigate(FoxyRoutes.LOGIN) { popUpTo(0) { inclusive = true } }
