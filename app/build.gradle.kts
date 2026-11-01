@@ -129,6 +129,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Fork addition: JUnit for the carried unit tests (upstream v2
-    // ships no unit tests and declares no test dependency).
+    // ships no unit tests and declares no test dependency). The real
+    // org.json shadows the stubbed android.jar copy on the test
+    // classpath so the batch parser's JSON branches can be tested.
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
