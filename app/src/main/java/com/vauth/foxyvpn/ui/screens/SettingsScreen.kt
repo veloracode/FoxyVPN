@@ -76,6 +76,7 @@ private const val GITHUB_URL = "https://github.com/veloracode/FoxyVPN"
 fun SettingsScreen(
     settingsStore: SettingsStore,
     appearance: AppearanceController,
+    hasAccounts: Boolean,
     onOpenLogs: () -> Unit,
     onOpenAccount: () -> Unit,
     onSignOut: () -> Unit,
@@ -508,47 +509,52 @@ fun SettingsScreen(
                 )
             }
 
-            SettingsSection(title = s("Account")) {
-                SettingsNavRow(
-                    title = s("Manage accounts"),
-                    subtitle = s("Multi-account list, quotas and batch import"),
-                    leadingIcon = Icons.Filled.AccountCircle,
-                    onClick = onOpenAccount,
-                )
-                Button(
-                    onClick = { showSignOutConfirm = true },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
-                    Text(s("  Sign out"))
-                }
-                if (showSignOutConfirm) {
-                    AlertDialog(
-                        onDismissRequest = { showSignOutConfirm = false },
-                        title = { Text(s("Sign out?")) },
-                        text = {
-                            Text(
-                                s("This removes every saved account from this device. You can sign in again later.")
-                            )
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                showSignOutConfirm = false
-                                onSignOut()
-                            }) { Text(s("Sign out")) }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showSignOutConfirm = false }) {
-                                Text(s("Cancel"))
-                            }
-                        },
+            // Settings is also reachable from the login screen, before any
+            // account exists; the account section is only shown when there
+            // is at least one saved account to manage or sign out of.
+            if (hasAccounts) {
+                SettingsSection(title = s("Account")) {
+                    SettingsNavRow(
+                        title = s("Manage accounts"),
+                        subtitle = s("Multi-account list, quotas and batch import"),
+                        leadingIcon = Icons.Filled.AccountCircle,
+                        onClick = onOpenAccount,
                     )
+                    Button(
+                        onClick = { showSignOutConfirm = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
+                        Text(s("  Sign out"))
+                    }
+                    if (showSignOutConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showSignOutConfirm = false },
+                            title = { Text(s("Sign out?")) },
+                            text = {
+                                Text(
+                                    s("This removes every saved account from this device. You can sign in again later.")
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showSignOutConfirm = false
+                                    onSignOut()
+                                }) { Text(s("Sign out")) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showSignOutConfirm = false }) {
+                                    Text(s("Cancel"))
+                                }
+                            },
+                        )
+                    }
                 }
             }
 

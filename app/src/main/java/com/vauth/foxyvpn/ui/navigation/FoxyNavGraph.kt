@@ -1,6 +1,8 @@
 package com.vauth.foxyvpn.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.navigation.NavHostController
@@ -69,6 +71,7 @@ fun FoxyNavGraph(
                 onSignedIn = {
                     navController.navigate(FoxyRoutes.HOME) { popUpTo(FoxyRoutes.LOGIN) { inclusive = true } }
                 },
+                onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
             )
         }
         composable(FoxyRoutes.HOME) {
@@ -101,9 +104,11 @@ fun FoxyNavGraph(
             )
         }
         composable(FoxyRoutes.SETTINGS) {
+            val accounts by app.tokenStore.accountsFlow.collectAsState()
             SettingsScreen(
                 settingsStore = app.settingsStore,
                 appearance = appearance,
+                hasAccounts = accounts.isNotEmpty(),
                 onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
                 onOpenAccount = { navController.navigate(FoxyRoutes.ACCOUNT) },
                 onSignOut = {

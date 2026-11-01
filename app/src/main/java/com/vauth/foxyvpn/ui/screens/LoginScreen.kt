@@ -3,6 +3,7 @@ package com.vauth.foxyvpn.ui.screens
 import com.vauth.foxyvpn.ui.l10n.s
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,9 +15,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -47,6 +52,7 @@ import kotlinx.coroutines.launch
 fun LoginScreen(
     authRepository: FxaAuthRepository,
     onSignedIn: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     // ------------------------------------------------------------------
     // Primary sign-in: the official Mozilla page in an in-app browser
@@ -154,6 +160,7 @@ fun LoginScreen(
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -374,6 +381,22 @@ fun LoginScreen(
             authRepository = authRepository,
             onImported = onSignedIn,
         )
+    }
+
+        // Settings must be reachable before sign-in: the connection
+        // options used when Mozilla cannot be reached live there, and a
+        // user blocked at sign-in has no other way to them.
+        IconButton(
+            onClick = onOpenSettings,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Settings,
+                contentDescription = "Settings",
+            )
+        }
     }
 }
 
