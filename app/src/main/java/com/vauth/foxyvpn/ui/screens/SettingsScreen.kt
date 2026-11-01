@@ -99,6 +99,14 @@ fun SettingsScreen(
     var upstreamProxyPort by remember { mutableStateOf(settingsStore.upstreamProxyPort) }
     var upstreamProxyUsername by remember { mutableStateOf(settingsStore.upstreamProxyUsername) }
     var upstreamProxyPassword by remember { mutableStateOf(settingsStore.upstreamProxyPassword) }
+    var tlsSplitMode by remember { mutableStateOf(settingsStore.tlsSplitMode) }
+    var apiProxyEnabled by remember { mutableStateOf(settingsStore.apiProxyEnabled) }
+    var apiProxyHost by remember { mutableStateOf(settingsStore.apiProxyHost) }
+    var apiProxyPort by remember { mutableStateOf(settingsStore.apiProxyPort) }
+    var apiProxyUsername by remember { mutableStateOf(settingsStore.apiProxyUsername) }
+    var apiProxyPassword by remember { mutableStateOf(settingsStore.apiProxyPassword) }
+    var apiRelayEnabled by remember { mutableStateOf(settingsStore.apiRelayEnabled) }
+    var apiRelayUrl by remember { mutableStateOf(settingsStore.apiRelayUrl) }
     var excludedApps by remember { mutableStateOf(settingsStore.excludedApps) }
     var blockAds by remember { mutableStateOf(settingsStore.dnsProvider == SettingsStore.DnsProvider.ADGUARD) }
     var showSignOutConfirm by remember { mutableStateOf(false) }
@@ -111,6 +119,10 @@ fun SettingsScreen(
     var showUpstreamProxyTypeDialog by remember { mutableStateOf(false) }
     var showUpstreamProxyAddressDialog by remember { mutableStateOf(false) }
     var showUpstreamProxyCredentialsDialog by remember { mutableStateOf(false) }
+    var showTlsSplitModeDialog by remember { mutableStateOf(false) }
+    var showApiProxyAddressDialog by remember { mutableStateOf(false) }
+    var showApiProxyCredentialsDialog by remember { mutableStateOf(false) }
+    var showApiRelayUrlDialog by remember { mutableStateOf(false) }
     var showSplitTunnelDialog by remember { mutableStateOf(false) }
 
     if (showDnsProviderDialog) {
@@ -221,6 +233,56 @@ fun SettingsScreen(
                 settingsStore.upstreamProxyUsername = username
                 settingsStore.upstreamProxyPassword = password
                 showUpstreamProxyCredentialsDialog = false
+            },
+        )
+    }
+    if (showTlsSplitModeDialog) {
+        TlsSplitModePickerDialog(
+            current = tlsSplitMode,
+            onDismiss = { showTlsSplitModeDialog = false },
+            onConfirm = {
+                tlsSplitMode = it
+                settingsStore.tlsSplitMode = it
+                showTlsSplitModeDialog = false
+            },
+        )
+    }
+    if (showApiProxyAddressDialog) {
+        ApiProxyAddressDialog(
+            currentHost = apiProxyHost,
+            currentPort = apiProxyPort,
+            onDismiss = { showApiProxyAddressDialog = false },
+            onConfirm = { host, port ->
+                apiProxyHost = host
+                apiProxyPort = port
+                settingsStore.apiProxyHost = host
+                settingsStore.apiProxyPort = port
+                showApiProxyAddressDialog = false
+            },
+        )
+    }
+    if (showApiProxyCredentialsDialog) {
+        ApiProxyCredentialsDialog(
+            currentUsername = apiProxyUsername,
+            currentPassword = apiProxyPassword,
+            onDismiss = { showApiProxyCredentialsDialog = false },
+            onConfirm = { username, password ->
+                apiProxyUsername = username
+                apiProxyPassword = password
+                settingsStore.apiProxyUsername = username
+                settingsStore.apiProxyPassword = password
+                showApiProxyCredentialsDialog = false
+            },
+        )
+    }
+    if (showApiRelayUrlDialog) {
+        ApiRelayUrlDialog(
+            current = apiRelayUrl,
+            onDismiss = { showApiRelayUrlDialog = false },
+            onConfirm = {
+                apiRelayUrl = it
+                settingsStore.apiRelayUrl = it
+                showApiRelayUrlDialog = false
             },
         )
     }
@@ -382,6 +444,51 @@ fun SettingsScreen(
                         title = s("Proxy credentials"),
                         subtitle = if (upstreamProxyUsername.isBlank()) "None" else upstreamProxyUsername,
                         onClick = { showUpstreamProxyCredentialsDialog = true },
+                    )
+                }
+            }
+
+            SettingsSection(title = s("When Mozilla can't be reached")) {
+                SettingsNavRow(
+                    title = s("TLS split mode"),
+                    subtitle = tlsSplitMode.label,
+                    onClick = { showTlsSplitModeDialog = true },
+                )
+                SettingsSwitchRow(
+                    title = s("Account proxy"),
+                    subtitle = s("Send sign-in and account requests through a SOCKS5 proxy"),
+                    checked = apiProxyEnabled,
+                    onCheckedChange = {
+                        apiProxyEnabled = it
+                        settingsStore.apiProxyEnabled = it
+                    },
+                )
+                if (apiProxyEnabled) {
+                    SettingsNavRow(
+                        title = s("Proxy address"),
+                        subtitle = if (apiProxyHost.isBlank()) "Not set" else "$apiProxyHost:$apiProxyPort",
+                        onClick = { showApiProxyAddressDialog = true },
+                    )
+                    SettingsNavRow(
+                        title = s("Proxy credentials"),
+                        subtitle = if (apiProxyUsername.isBlank()) "None" else apiProxyUsername,
+                        onClick = { showApiProxyCredentialsDialog = true },
+                    )
+                }
+                SettingsSwitchRow(
+                    title = s("API relay"),
+                    subtitle = s("Retry account requests through your relay when they cannot go directly"),
+                    checked = apiRelayEnabled,
+                    onCheckedChange = {
+                        apiRelayEnabled = it
+                        settingsStore.apiRelayEnabled = it
+                    },
+                )
+                if (apiRelayEnabled) {
+                    SettingsNavRow(
+                        title = s("Relay address"),
+                        subtitle = apiRelayUrl.ifBlank { "Not set" },
+                        onClick = { showApiRelayUrlDialog = true },
                     )
                 }
             }
@@ -1098,6 +1205,200 @@ private fun UpstreamProxyCredentialsDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(username, password) }) { Text(s("Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(s("Cancel")) }
+        },
+    )
+}
+
+@Composable
+private fun TlsSplitModePickerDialog(
+    current: SettingsStore.TlsSplitMode,
+    onDismiss: () -> Unit,
+    onConfirm: (SettingsStore.TlsSplitMode) -> Unit,
+) {
+    var selected by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s("TLS split mode")) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    s("Split the TLS hello of account and server requests, for a network that filters by server name."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                SettingsStore.TlsSplitMode.entries.forEach { mode ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = selected == mode, onClick = { selected = mode })
+                            .padding(vertical = 4.dp),
+                    ) {
+                        RadioButton(selected = selected == mode, onClick = { selected = mode })
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(mode.label)
+                            Text(
+                                mode.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selected) }) { Text(s("Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(s("Cancel")) }
+        },
+    )
+}
+
+@Composable
+private fun ApiProxyAddressDialog(
+    currentHost: String,
+    currentPort: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (String, Int) -> Unit,
+) {
+    var host by remember { mutableStateOf(currentHost) }
+    var portText by remember { mutableStateOf(currentPort.toString()) }
+    val cleanedHost = SettingsStore.cleanProxyHost(host)
+    val parsedPort = portText.toIntOrNull()
+    val isValid = SettingsStore.isValidProxyHost(cleanedHost) &&
+        parsedPort != null && SettingsStore.isValidProxyPort(parsedPort)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s("Proxy address")) },
+        text = {
+            Column {
+                Text(
+                    s("A SOCKS5 proxy for sign-in and account requests only — for example a proxy app running on this phone. The VPN tunnel itself does not use it."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text(s("Host or IP")) },
+                    singleLine = true,
+                    isError = host.isNotBlank() && !SettingsStore.isValidProxyHost(cleanedHost),
+                )
+                OutlinedTextField(
+                    value = portText,
+                    onValueChange = { portText = it.filter(Char::isDigit).take(5) },
+                    label = { Text("Port (1\u201365535)") },
+                    singleLine = true,
+                    isError = portText.isNotBlank() && (parsedPort == null || !SettingsStore.isValidProxyPort(parsedPort)),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { parsedPort?.let { onConfirm(cleanedHost, it) } },
+                enabled = isValid,
+            ) { Text(s("Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(s("Cancel")) }
+        },
+    )
+}
+
+@Composable
+private fun ApiProxyCredentialsDialog(
+    currentUsername: String,
+    currentPassword: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String) -> Unit,
+) {
+    var username by remember { mutableStateOf(currentUsername) }
+    var password by remember { mutableStateOf(currentPassword) }
+    val credentialsError = SettingsStore.proxyCredentialsError(username.trim(), password.trim())
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s("Proxy credentials")) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text(s("Username (optional)")) },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text(s("Password (optional)")) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                if (credentialsError != null) {
+                    Text(
+                        credentialsError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(username.trim(), password.trim()) },
+                enabled = credentialsError == null,
+            ) { Text(s("Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(s("Cancel")) }
+        },
+    )
+}
+
+@Composable
+private fun ApiRelayUrlDialog(
+    current: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var url by remember { mutableStateOf(current) }
+    val trimmed = url.trim()
+    val isValid = trimmed.isEmpty() || SettingsStore.isValidRelayUrl(trimmed)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s("Relay address")) },
+        text = {
+            Column {
+                Text(
+                    s("Your own relay — a small worker or script that forwards a request and answers with the reply. Account requests go directly first and through the relay only when that fails. The address must start with https://, because sign-in data crosses it."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("Relay URL (https://...)") },
+                    placeholder = { Text("https://relay.example.com/") },
+                    singleLine = true,
+                    isError = url.isNotBlank() && !isValid,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(trimmed) }, enabled = isValid) { Text(s("Save")) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(s("Cancel")) }
