@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.res.Configuration
+import android.net.ConnectivityManager
 import android.os.Build
 import android.util.Log
 import com.vauth.foxyvpn.data.ControlPlaneHttp
@@ -43,6 +44,15 @@ class FoxyVpnApp : Application() {
         proxyStateStore = ProxyStateStore(this)
         settingsStore = SettingsStore(this)
         ControlPlaneHttp.tlsSplitModeProvider = { settingsStore.tlsSplitMode }
+        ControlPlaneHttp.apiProxyProvider = { settingsStore.effectiveApiProxy }
+        ControlPlaneHttp.apiRelayProvider = { settingsStore.effectiveApiRelayUrl }
+        ControlPlaneHttp.networkKeyProvider = {
+            runCatching {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.activeNetwork?.toString()
+            }.getOrNull()
+        }
+        ControlPlaneHttp.installSocksAuthenticator()
         guardianClient = GuardianClient()
         serverListClient = ServerListClient(this)
         authRepository = FxaAuthRepository(tokenStore)

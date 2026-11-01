@@ -3,6 +3,7 @@ package com.vauth.foxyvpn.data
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import com.vauth.foxyvpn.vpn.upstream.TlsClientHelloSplitter
@@ -87,7 +88,9 @@ class SimpleCookieJar : CookieJar {
     fun snapshotAll(): List<Cookie> = byDomain.values.flatten()
 }
 
-private class SplitClientHelloSocket(
+// Internal (not private) so unit tests can drive the socket directly;
+// visibility only — no behavior depends on it.
+internal class SplitClientHelloSocket(
     private val modeProvider: () -> SettingsStore.TlsSplitMode,
 ) : Socket() {
     private var splitDone = false
@@ -184,10 +187,55 @@ object ControlPlaneHttp {
     @Volatile
     var tlsSplitModeProvider: (() -> SettingsStore.TlsSplitMode)? = null
 
+    /** The configured account (control-plane) SOCKS5 proxy, or null. Set by the app. */
+    @Volatile
+    var apiProxyProvider: (() -> SettingsStore.ApiProxySettings?)? = null
+
+    /** The configured API relay base URL (normalized https), or null. Set by the app. */
+    @Volatile
+    var apiRelayProvider: (() -> String?)? = null
+
+    /** Identity of the current network, for the relay's relay-first window. Set by the app. */
+    @Volatile
+    var networkKeyProvider: (() -> String?)? = null
+
+    private val proxySelector = ControlPlaneProxySelector {
+        apiProxyProvider?.invoke()
+    }
+
+    private val relayInterceptor = RelayFallbackInterceptor(
+        relayProvider = {
+            apiRelayProvider?.invoke()?.let { url ->
+                runCatching { url.toHttpUrl() }.getOrNull()
+            }
+        },
+        networkKeyProvider = { networkKeyProvider?.invoke() },
+    )
+
+    @Volatile
+    private var socksAuthenticatorInstalled = false
+
+    /**
+     * Installs the SOCKS5 credential provider as the process-wide
+     * [java.net.Authenticator]. It answers only for the configured
+     * account proxy and returns null for everything else.
+     */
+    fun installSocksAuthenticator() {
+        if (socksAuthenticatorInstalled) return
+        synchronized(this) {
+            if (socksAuthenticatorInstalled) return
+            ControlPlaneSocksAuthenticator.proxyProvider = { apiProxyProvider?.invoke() }
+            runCatching { java.net.Authenticator.setDefault(ControlPlaneSocksAuthenticator) }
+            socksAuthenticatorInstalled = true
+        }
+    }
+
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
             .socketFactory(ProtectingSocketFactory())
+            .proxySelector(proxySelector)
+            .addInterceptor(relayInterceptor)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(30, TimeUnit.SECONDS)
