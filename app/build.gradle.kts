@@ -125,6 +125,14 @@ android {
         abortOnError = false
     }
 
+    testOptions {
+        unitTests {
+            // JVM unit tests run against the stubbed android.jar; logging
+            // and other incidental framework calls return defaults there.
+            isReturnDefaultValues = true
+        }
+    }
+
     packaging {
         resources.excludes.add("META-INF/INDEX.LIST")
         resources.excludes.add("META-INF/*.SF")
