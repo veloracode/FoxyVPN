@@ -16,6 +16,7 @@ import com.vauth.foxyvpn.ui.theme.ThemeMode
 import com.vauth.foxyvpn.ui.theme.UiFontScale
 import com.vauth.foxyvpn.vpn.FoxyVpnService
 import com.vauth.foxyvpn.widget.QuickConnectWidgetProvider
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
@@ -336,10 +337,70 @@ class SettingsStore(context: Context) {
         }
 
     var tlsSplitMode: TlsSplitMode
-        get() = TlsSplitMode.entries.firstOrNull {
-            it.name == prefs.getString(KEY_TLS_SPLIT_MODE, null)
-        } ?: TlsSplitMode.OFF
+        get() = TlsSplitMode.parse(prefs.getString(KEY_TLS_SPLIT_MODE, null))
         set(value) { prefs.edit().putString(KEY_TLS_SPLIT_MODE, value.name).apply() }
+
+    // ------------------------------------------------------------------
+    // Control-plane access fallbacks. These affect only the account/API
+    // requests (Firefox Accounts, Guardian, the server list) — never the
+    // VPN tunnel itself, and never the data-plane upstream proxy above
+    // (upstreamProxy*, which chains the tunnel through another proxy).
+    // All default off; with everything off the control plane behaves
+    // exactly as before.
+    // ------------------------------------------------------------------
+
+    /** SOCKS5 proxy for control-plane requests only (the account proxy). */
+    var apiProxyEnabled: Boolean
+        get() = prefs.getBoolean(KEY_API_PROXY_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_API_PROXY_ENABLED, value).apply() }
+
+    var apiProxyHost: String
+        get() = prefs.getString(KEY_API_PROXY_HOST, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_API_PROXY_HOST, cleanProxyHost(value)).apply() }
+
+    var apiProxyPort: Int
+        get() = prefs.getInt(KEY_API_PROXY_PORT, DEFAULT_API_PROXY_PORT)
+        set(value) { prefs.edit().putInt(KEY_API_PROXY_PORT, value.coerceIn(1, 65_535)).apply() }
+
+    var apiProxyUsername: String
+        get() = credentialsPrefs.getString(KEY_API_PROXY_USERNAME, "") ?: ""
+        set(value) { credentialsPrefs.edit().putString(KEY_API_PROXY_USERNAME, value.trim()).apply() }
+
+    var apiProxyPassword: String
+        get() = credentialsPrefs.getString(KEY_API_PROXY_PASSWORD, "") ?: ""
+        set(value) { credentialsPrefs.edit().putString(KEY_API_PROXY_PASSWORD, value.trim()).apply() }
+
+    /** The account proxy to use, or null when off or not validly configured. */
+    val effectiveApiProxy: ApiProxySettings?
+        get() {
+            if (!apiProxyEnabled) return null
+            val host = cleanProxyHost(apiProxyHost)
+            if (!isValidProxyHost(host) || !isValidProxyPort(apiProxyPort)) return null
+            val username = apiProxyUsername
+            val password = apiProxyPassword
+            if (proxyCredentialsError(username, password) != null) return null
+            return ApiProxySettings(host, apiProxyPort, username, password)
+        }
+
+    /** API relay for control-plane requests (direct first, relay on failure). */
+    var apiRelayEnabled: Boolean
+        get() = prefs.getBoolean(KEY_API_RELAY_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_API_RELAY_ENABLED, value).apply() }
+
+    var apiRelayUrl: String
+        get() = prefs.getString(KEY_API_RELAY_URL, "") ?: ""
+        set(value) { prefs.edit().putString(KEY_API_RELAY_URL, value.trim()).apply() }
+
+    /** The normalized relay base URL, or null when off or not a valid https URL. */
+    val effectiveApiRelayUrl: String?
+        get() = if (apiRelayEnabled) normalizeRelayUrl(apiRelayUrl) else null
+
+    data class ApiProxySettings(
+        val host: String,
+        val port: Int,
+        val username: String,
+        val password: String,
+    )
 
     enum class TlsSplitMode(
         val label: String,
@@ -358,6 +419,12 @@ class SettingsStore(context: Context) {
             description = "Fragments the SNI extension across packets (defeats DPI)",
         ),
         ;
+
+        companion object {
+            /** Stored value → mode; anything unknown (or unset) is OFF. */
+            fun parse(raw: String?): TlsSplitMode =
+                entries.firstOrNull { it.name == raw } ?: OFF
+        }
     }
 
     enum class UpstreamProxyType { SOCKS5, HTTP }
@@ -494,6 +561,14 @@ class SettingsStore(context: Context) {
         private const val KEY_UPSTREAM_PROXY_PASSWORD = "upstream_proxy_password"
         private const val KEY_EXCLUDED_APPS = "excluded_apps"
         private const val KEY_TLS_SPLIT_MODE = "tls_split_mode"
+        private const val KEY_API_PROXY_ENABLED = "api_proxy_enabled"
+        private const val KEY_API_PROXY_HOST = "api_proxy_host"
+        private const val KEY_API_PROXY_PORT = "api_proxy_port"
+        private const val KEY_API_PROXY_USERNAME = "api_proxy_username"
+        private const val KEY_API_PROXY_PASSWORD = "api_proxy_password"
+        private const val KEY_API_RELAY_ENABLED = "api_relay_enabled"
+        private const val KEY_API_RELAY_URL = "api_relay_url"
+        const val DEFAULT_API_PROXY_PORT = 1080
         const val DEFAULT_SOCKS_BIND_ADDRESS = "127.0.0.1"
         const val DEFAULT_SOCKS_PORT = 1080
         const val DEFAULT_HTTP_PROXY_PORT = 8080
@@ -548,5 +623,71 @@ class SettingsStore(context: Context) {
             val host = value.trim().removeSuffix(".")
             return isValidHostname(host) || isValidIpAddress(host)
         }
+
+        // --------------------------------------------------------------
+        // Control-plane fallback validation (pure; no Android APIs, so
+        // these run in plain JVM unit tests).
+        // --------------------------------------------------------------
+
+        /**
+         * A proxy address as typed or pasted, without the spaces and the
+         * scheme that may come with it (mirrors the desktop client's
+         * cleaning of its upstream proxy address).
+         */
+        fun cleanProxyHost(raw: String): String {
+            var address = raw.filterNot { it.isWhitespace() }
+            val schemeEnd = address.indexOf("://")
+            if (schemeEnd >= 0) address = address.substring(schemeEnd + 3)
+            return address.trimEnd('/')
+        }
+
+        /**
+         * A host for the account proxy: a DNS name, "localhost", or an IP
+         * literal (IPv6 written without brackets). Deliberately a charset
+         * check only — a name that does not resolve fails later as an
+         * ordinary connection error, not here.
+         */
+        fun isValidProxyHost(host: String): Boolean {
+            if (host.isEmpty() || host.length > 253) return false
+            if (host.startsWith('.') || host.endsWith('.')) return false
+            return host.all { ch ->
+                ch.isLetterOrDigit() || ch == '-' || ch == '.' || ch == '_' || ch == ':'
+            }
+        }
+
+        fun isValidProxyPort(port: Int): Boolean = port in 1..65_535
+
+        /**
+         * SOCKS5 credentials are both or neither, and at most 255 bytes
+         * each. Returns a short problem description, or null when valid.
+         */
+        fun proxyCredentialsError(username: String, password: String): String? {
+            if (username.isEmpty() != password.isEmpty()) {
+                return "The username and the password go together"
+            }
+            if (username.toByteArray(Charsets.UTF_8).size > 255 ||
+                password.toByteArray(Charsets.UTF_8).size > 255
+            ) {
+                return "SOCKS5 takes no username or password longer than 255 bytes"
+            }
+            return null
+        }
+
+        /**
+         * An API relay URL, normalized: empty when unset is NOT valid here
+         * (callers check blank separately); otherwise it must be an
+         * https:// URL with a host — plain http is refused because the
+         * sign-in and the account tokens cross the relay. Returns the
+         * canonical URL string, or null when invalid.
+         */
+        fun normalizeRelayUrl(raw: String): String? {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return null
+            val url = trimmed.toHttpUrlOrNull() ?: return null
+            if (url.scheme != "https" || url.host.isEmpty()) return null
+            return url.toString()
+        }
+
+        fun isValidRelayUrl(raw: String): Boolean = normalizeRelayUrl(raw) != null
     }
 }
