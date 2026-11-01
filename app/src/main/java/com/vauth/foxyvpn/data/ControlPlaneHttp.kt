@@ -8,10 +8,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import com.vauth.foxyvpn.vpn.upstream.TlsClientHelloSplitter
 import java.io.FilterOutputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketAddress
+import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.net.SocketFactory
@@ -137,6 +140,7 @@ internal class SplitClientHelloOutputStream(
 // visibility only — no behavior depends on it.
 internal class SplitClientHelloSocket(
     private val modeProvider: () -> SettingsStore.TlsSplitMode,
+    private val proxyProvider: () -> SettingsStore.ApiProxySettings? = { null },
 ) : Socket() {
     // One wrapper per socket, as the split state must be shared by every
     // getOutputStream() call (previously the state lived on the socket).
@@ -146,12 +150,58 @@ internal class SplitClientHelloSocket(
         stream ?: SplitClientHelloOutputStream(super.getOutputStream(), modeProvider) {
             runCatching { tcpNoDelay = true }
         }.also { stream = it }
+
+    /**
+     * With an account proxy configured, the connection is made to the
+     * SOCKS5 proxy instead and the handshake (inside this socket, so the
+     * factory's protect() and the ClientHello splitter both apply)
+     * names the origin host — OkHttp's built-in SOCKS support cannot be
+     * used, as it creates the proxy socket itself and bypasses this
+     * socket factory entirely (no protect, no split). Without a proxy
+     * this is the plain platform connect, unchanged.
+     */
+    override fun connect(endpoint: SocketAddress?, timeout: Int) {
+        val proxy = proxyProvider()
+        if (proxy == null || endpoint !is InetSocketAddress) {
+            super.connect(endpoint, timeout)
+            return
+        }
+        val originHost = endpoint.hostString
+        if (originHost.isNullOrEmpty() || originHost == "0.0.0.0") {
+            throw UnknownHostException("no origin host name for the proxied connection")
+        }
+        val proxyAddress = ProxyHostResolver.resolve(proxy.host)
+        super.connect(InetSocketAddress(proxyAddress, proxy.port), timeout)
+        val previousTimeout = soTimeout
+        try {
+            if (timeout > 0) soTimeout = timeout
+            socks5Handshake(
+                super.getInputStream(),
+                super.getOutputStream(),
+                originHost,
+                endpoint.port,
+                proxy,
+            )
+        } catch (e: IOException) {
+            runCatching { close() }
+            throw e
+        } finally {
+            runCatching { soTimeout = previousTimeout }
+        }
+    }
 }
 
-private class ProtectingSocketFactory : SocketFactory() {
+// Internal (not private) so unit tests and the proxy-host resolver can
+// build clients on it; no behavior depends on the visibility.
+internal class ProtectingSocketFactory(
+    private val useApiProxy: Boolean = true,
+) : SocketFactory() {
 
     private fun createRawSocket(): Socket =
-        SplitClientHelloSocket { ControlPlaneHttp.tlsSplitModeProvider?.invoke() ?: SettingsStore.TlsSplitMode.OFF }
+        SplitClientHelloSocket(
+            modeProvider = { ControlPlaneHttp.tlsSplitModeProvider?.invoke() ?: SettingsStore.TlsSplitMode.OFF },
+            proxyProvider = { if (useApiProxy) ControlPlaneHttp.apiProxyProvider?.invoke() else null },
+        )
 
     private fun protect(socket: Socket, localAddress: InetSocketAddress?): Socket {
         runCatching {
@@ -163,11 +213,10 @@ private class ProtectingSocketFactory : SocketFactory() {
         if (protector != null) {
             val protectedOk = runCatching { protector.invoke(socket) }.getOrDefault(false)
             if (!protectedOk) {
-                AppLogger.w(
-                    TAG,
-                    "VpnService.protect() refused a control-plane socket; this request would be routed " +
-                        "back into the tunnel instead of out to the network",
-                )
+                // Failing open would route the request back into the
+                // tunnel it is trying to bypass — refuse instead.
+                runCatching { socket.close() }
+                throw IOException("VpnService.protect() refused a control-plane socket")
             }
         }
         return socket
@@ -207,13 +256,10 @@ object ControlPlaneHttp {
     @Volatile
     var apiRelayProvider: (() -> String?)? = null
 
-    /** Identity of the current network, for the relay's relay-first window. Set by the app. */
-    @Volatile
-    var networkKeyProvider: (() -> String?)? = null
+    /** Records whether each call's request was fully sent (relay guard). */
+    val requestSentTracker = RequestSentTracker()
 
-    private val proxySelector = ControlPlaneProxySelector {
-        apiProxyProvider?.invoke()
-    }
+    private val controlPlaneDns = ControlPlaneDns { apiProxyProvider?.invoke() }
 
     private val relayInterceptor = RelayFallbackInterceptor(
         relayProvider = {
@@ -221,36 +267,66 @@ object ControlPlaneHttp {
                 runCatching { url.toHttpUrl() }.getOrNull()
             }
         },
-        networkKeyProvider = { networkKeyProvider?.invoke() },
+        cookieJarProvider = { cookieJar },
+        relayClientProvider = { relayClient },
+        requestSent = { call -> requestSentTracker.wasRequestSent(call) },
+        nowMs = { android.os.SystemClock.elapsedRealtime() },
     )
 
-    @Volatile
-    private var socksAuthenticatorInstalled = false
-
-    /**
-     * Installs the SOCKS5 credential provider as the process-wide
-     * [java.net.Authenticator]. It answers only for the configured
-     * account proxy and returns null for everything else.
-     */
-    fun installSocksAuthenticator() {
-        if (socksAuthenticatorInstalled) return
-        synchronized(this) {
-            if (socksAuthenticatorInstalled) return
-            ControlPlaneSocksAuthenticator.proxyProvider = { apiProxyProvider?.invoke() }
-            runCatching { java.net.Authenticator.setDefault(ControlPlaneSocksAuthenticator) }
-            socksAuthenticatorInstalled = true
-        }
+    /** Called when the (non-VPN) network changes: relay-first state is dropped. */
+    fun onNetworkChanged() {
+        relayInterceptor.clearStickiness()
     }
 
-    val client: OkHttpClient by lazy {
+    /**
+     * Called when a control-plane network setting changes: relay-first
+     * state is dropped, cached proxy addresses are forgotten, and pooled
+     * connections (which predate the change) are evicted.
+     */
+    fun onSettingsChanged() {
+        relayInterceptor.clearStickiness()
+        ProxyHostResolver.clearCache()
+        clientOrNull?.connectionPool?.evictAll()
+    }
+
+    @Volatile
+    private var clientOrNull: OkHttpClient? = null
+
+    val client: OkHttpClient
+        get() = clientOrNull ?: synchronized(this) {
+            clientOrNull ?: buildClient().also { clientOrNull = it }
+        }
+
+    private fun buildClient(): OkHttpClient =
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
             .socketFactory(ProtectingSocketFactory())
-            .proxySelector(proxySelector)
+            .dns(controlPlaneDns)
+            .eventListener(requestSentTracker)
             .addInterceptor(relayInterceptor)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+    /**
+     * The client the relay hop itself runs on: the shared client minus
+     * the relay interceptor (no recursion), with no cookie jar and no
+     * redirect following — cookies are copied by hand against the
+     * original URL by the interceptor, and a relayed redirect is the
+     * caller's to see. Socket factory, DNS, pool and dispatcher are
+     * shared, so the relay hop gets the same protect() / SOCKS / split
+     * treatment as a direct connection.
+     */
+    val relayClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .apply { interceptors().remove(relayInterceptor) }
+            .cookieJar(CookieJar.NO_COOKIES)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(35, TimeUnit.SECONDS)
             .build()
     }
 }

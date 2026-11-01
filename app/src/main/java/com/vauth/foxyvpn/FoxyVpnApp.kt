@@ -46,13 +46,24 @@ class FoxyVpnApp : Application() {
         ControlPlaneHttp.tlsSplitModeProvider = { settingsStore.tlsSplitMode }
         ControlPlaneHttp.apiProxyProvider = { settingsStore.effectiveApiProxy }
         ControlPlaneHttp.apiRelayProvider = { settingsStore.effectiveApiRelayUrl }
-        ControlPlaneHttp.networkKeyProvider = {
-            runCatching {
-                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-                cm.activeNetwork?.toString()
-            }.getOrNull()
+        settingsStore.addControlPlaneSettingsListener { ControlPlaneHttp.onSettingsChanged() }
+        runCatching {
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            val networkRequest = android.net.NetworkRequest.Builder()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            cm.registerNetworkCallback(
+                networkRequest,
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) =
+                        ControlPlaneHttp.onNetworkChanged()
+
+                    override fun onLost(network: android.net.Network) =
+                        ControlPlaneHttp.onNetworkChanged()
+                },
+            )
         }
-        ControlPlaneHttp.installSocksAuthenticator()
         guardianClient = GuardianClient()
         serverListClient = ServerListClient(this)
         authRepository = FxaAuthRepository(tokenStore)

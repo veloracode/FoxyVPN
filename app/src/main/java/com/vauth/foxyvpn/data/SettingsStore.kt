@@ -395,6 +395,30 @@ class SettingsStore(context: Context) {
     val effectiveApiRelayUrl: String?
         get() = if (apiRelayEnabled) normalizeRelayUrl(apiRelayUrl) else null
 
+    private val controlPlaneListeners =
+        mutableListOf<android.content.SharedPreferences.OnSharedPreferenceChangeListener>()
+
+    /**
+     * Invokes [listener] whenever a control-plane network setting (TLS
+     * split mode, account proxy, API relay) changes, so pooled
+     * connections and relay state built on the old values can be dropped.
+     */
+    fun addControlPlaneSettingsListener(listener: () -> Unit) {
+        val keys = setOf(
+            KEY_TLS_SPLIT_MODE,
+            KEY_API_PROXY_ENABLED, KEY_API_PROXY_HOST, KEY_API_PROXY_PORT,
+            KEY_API_PROXY_USERNAME, KEY_API_PROXY_PASSWORD,
+            KEY_API_RELAY_ENABLED, KEY_API_RELAY_URL,
+        )
+        val delegate =
+            android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key in keys) listener()
+            }
+        synchronized(controlPlaneListeners) { controlPlaneListeners += delegate }
+        prefs.registerOnSharedPreferenceChangeListener(delegate)
+        credentialsPrefs.registerOnSharedPreferenceChangeListener(delegate)
+    }
+
     data class ApiProxySettings(
         val host: String,
         val port: Int,
