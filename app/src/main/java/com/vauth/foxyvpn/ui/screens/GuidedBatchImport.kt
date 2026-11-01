@@ -262,7 +262,7 @@ fun GuidedBatchImport(
         } else {
             Button(
                 onClick = {
-                    val parsed = authRepository.parseBatchInput(input)
+                    val parsed = FxaAuthRepository.parseBatchInput(input)
                     if (parsed.isEmpty()) {
                         formError = "Nothing to import — check the pasted lines."
                     } else {
