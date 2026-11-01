@@ -47,8 +47,8 @@ android {
         applicationId = "com.veloracode.foxyvpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 50
-        versionName = "1.1.4"
+        versionCode = 51
+        versionName = "1.1.5"
 
         externalNativeBuild {
             ndkBuild {
