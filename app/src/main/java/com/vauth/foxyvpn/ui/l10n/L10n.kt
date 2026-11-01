@@ -182,6 +182,8 @@ object L10n {
         "Show usage next to each location" to "نمایش مصرف کنار هر مکان",
         "Sign in" to "ورود",
         "Sign in with Firefox" to "ورود با فایرفاکس",
+        "Sign in with email and password" to "ورود با ایمیل و رمز عبور",
+        "Opens the official Mozilla sign-in page in an in-app browser and returns automatically once you are signed in." to "صفحه رسمی ورود موزیلا در مرورگر داخل برنامه باز می‌شود و پس از ورود، به‌صورت خودکار برمی‌گردد.",
         "Sign out" to "خروج",
         "Sign out?" to "خروج؟",
         "Signature" to "امضا",
