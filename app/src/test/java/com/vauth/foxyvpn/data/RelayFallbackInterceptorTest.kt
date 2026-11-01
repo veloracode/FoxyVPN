@@ -3,6 +3,7 @@ package com.vauth.foxyvpn.data
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Connection
+import okhttp3.Cookie
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -415,7 +416,17 @@ class RelayFallbackInterceptorTest {
 
     @Test
     fun cookies_areCopiedToTheRelayRequestAndBack() {
-        jar.set("sess", "abc", "api.accounts.firefox.com")
+        jar.saveFromResponse(
+            "https://api.accounts.firefox.com".toHttpUrl(),
+            listOf(
+                Cookie.Builder()
+                    .name("sess")
+                    .value("abc")
+                    .domain("api.accounts.firefox.com")
+                    .path("/")
+                    .build(),
+            ),
+        )
         script.respond(406, "")
         script.respond(
             200,

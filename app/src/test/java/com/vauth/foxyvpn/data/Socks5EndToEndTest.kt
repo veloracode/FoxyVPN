@@ -25,7 +25,7 @@ class Socks5EndToEndTest {
             .socketFactory(
                 ProtectingSocketFactory(useApiProxy = true),
             )
-            .dns(ControlPlaneDns { settings })
+            .dns(ControlPlaneDns(proxyProvider = { settings }))
             .connectTimeout(3, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
             .callTimeout(10, TimeUnit.SECONDS)

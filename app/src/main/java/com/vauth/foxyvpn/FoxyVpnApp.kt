@@ -5,8 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.res.Configuration
 import android.net.ConnectivityManager
-import android.os.Build
-import android.util.Log
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import com.vauth.foxyvpn.data.AccountRepository
+import com.vauth.foxyvpn.data.AccountStore
 import com.vauth.foxyvpn.data.ControlPlaneHttp
 import com.vauth.foxyvpn.data.CrashReporter
 import com.vauth.foxyvpn.data.FxaAuthRepository
@@ -15,21 +18,41 @@ import com.vauth.foxyvpn.data.ProxyStateStore
 import com.vauth.foxyvpn.data.ServerListClient
 import com.vauth.foxyvpn.data.SettingsStore
 import com.vauth.foxyvpn.data.TokenStore
+import com.vauth.foxyvpn.update.AppUpdater
 import com.vauth.foxyvpn.vpn.FoxyVpnService
-import com.vauth.foxyvpn.vpn.upstream.NettyLoggingBridge
-import com.vauth.foxyvpn.vpn.upstream.UpstreamTrust
 import com.vauth.foxyvpn.widget.QuickConnectWidgetProvider
-import org.conscrypt.Conscrypt
-import java.security.Security
 
-class FoxyVpnApp : Application() {
+interface AppContainer {
+    val tokenStore: TokenStore
+    val proxyStateStore: ProxyStateStore
+    val settingsStore: SettingsStore
+    val guardianClient: GuardianClient
+    val serverListClient: ServerListClient
+    val authRepository: FxaAuthRepository
+    // Fork additions: the multi-account layer beside the session store.
+    val accountStore: AccountStore
+    val accountRepository: AccountRepository
+}
 
-    lateinit var tokenStore: TokenStore
-    lateinit var proxyStateStore: ProxyStateStore
-    lateinit var settingsStore: SettingsStore
-    lateinit var guardianClient: GuardianClient
-    lateinit var serverListClient: ServerListClient
-    lateinit var authRepository: FxaAuthRepository
+class FoxyVpnApp : Application(), AppContainer {
+
+    internal lateinit var appUpdater: AppUpdater
+    override lateinit var tokenStore: TokenStore
+        internal set
+    override lateinit var proxyStateStore: ProxyStateStore
+        internal set
+    override lateinit var settingsStore: SettingsStore
+        internal set
+    override lateinit var guardianClient: GuardianClient
+        internal set
+    override lateinit var serverListClient: ServerListClient
+        internal set
+    override lateinit var authRepository: FxaAuthRepository
+        internal set
+    override lateinit var accountStore: AccountStore
+        internal set
+    override lateinit var accountRepository: AccountRepository
+        internal set
 
     override fun onCreate() {
         super.onCreate()
@@ -37,54 +60,57 @@ class FoxyVpnApp : Application() {
         CrashReporter.install(this)
         CrashReporter.replayLastCrashIfAny(this)
 
-        NettyLoggingBridge.install()
-        installConscrypt()
-        UpstreamTrust.init(this)
+        appUpdater = AppUpdater(this)
         tokenStore = TokenStore(this)
         proxyStateStore = ProxyStateStore(this)
         settingsStore = SettingsStore(this)
-        ControlPlaneHttp.tlsSplitModeProvider = { settingsStore.tlsSplitMode }
+        guardianClient = GuardianClient()
+        serverListClient = ServerListClient(this)
+        accountStore = AccountStore(this)
+        authRepository = FxaAuthRepository(tokenStore, accountStore = accountStore)
+        accountRepository = AccountRepository(accountStore, tokenStore)
+        accountRepository.migrateAndReconcile()
+        installControlPlaneHooks()
+        createNotificationChannel()
+    }
+
+    /**
+     * Fork wiring for the control-plane fallbacks: the proxy/relay
+     * providers read the live settings, plain-prefs changes invalidate
+     * the cached state, and a change of the underlying (non-VPN)
+     * network drops the relay stickiness — the v1.1.4 design, carried
+     * unchanged.
+     */
+    private fun installControlPlaneHooks() {
         ControlPlaneHttp.apiProxyProvider = { settingsStore.effectiveApiProxy }
         ControlPlaneHttp.apiRelayProvider = { settingsStore.effectiveApiRelayUrl }
-        settingsStore.addControlPlaneSettingsListener { ControlPlaneHttp.onSettingsChanged() }
+        settingsStore.addControlPlaneSettingsListener {
+            ControlPlaneHttp.onSettingsChanged()
+        }
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return
         runCatching {
-            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            val networkRequest = android.net.NetworkRequest.Builder()
-                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                .build()
-            cm.registerNetworkCallback(
-                networkRequest,
+            connectivity.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .build(),
                 object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: android.net.Network) =
+                    override fun onAvailable(network: Network) =
                         ControlPlaneHttp.onNetworkChanged()
 
-                    override fun onLost(network: android.net.Network) =
+                    override fun onLost(network: Network) =
                         ControlPlaneHttp.onNetworkChanged()
                 },
             )
         }
-        guardianClient = GuardianClient()
-        serverListClient = ServerListClient(this)
-        authRepository = FxaAuthRepository(tokenStore)
-        createNotificationChannel()
-    }
-
-    private fun installConscrypt() {
-        runCatching {
-            Security.insertProviderAt(Conscrypt.newProvider(), 1)
-        }.onFailure {
-            Log.w("FoxyVpnApp", "failed to install Conscrypt security provider", it)
-        }
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val channel = NotificationChannel(
-            VPN_NOTIFICATION_CHANNEL_ID,
-            "VPN status",
-            NotificationManager.IMPORTANCE_LOW,
-        )
+        val channel =
+            NotificationChannel(
+                VPN_NOTIFICATION_CHANNEL_ID,
+                "VPN status",
+                NotificationManager.IMPORTANCE_LOW,
+            )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 

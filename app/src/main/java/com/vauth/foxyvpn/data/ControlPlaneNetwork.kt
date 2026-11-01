@@ -40,8 +40,8 @@ internal val RELAY_406_HOSTS = setOf("api.accounts.firefox.com", "oauth.accounts
 /**
  * DNS for control-plane clients.
  *
- * With no account proxy configured this is the platform resolver,
- * exactly as before. While a proxy is configured it returns a single
+ * With no account proxy configured this delegates to [fallback]
+ * (upstream's underlying-network resolver), exactly as before. While a proxy is configured it returns a single
  * placeholder address that CARRIES the origin hostname: the real
  * connection is made to the SOCKS5 proxy inside the socket (see
  * SplitClientHelloSocket.connect), which names the origin in the
@@ -52,12 +52,13 @@ internal val RELAY_406_HOSTS = setOf("api.accounts.firefox.com", "oauth.accounts
  */
 class ControlPlaneDns(
     private val proxyProvider: () -> SettingsStore.ApiProxySettings?,
+    private val fallback: Dns = Dns.SYSTEM,
 ) : Dns {
     override fun lookup(hostname: String): List<InetAddress> {
         if (proxyProvider() != null) {
             return listOf(InetAddress.getByAddress(hostname, PLACEHOLDER))
         }
-        return Dns.SYSTEM.lookup(hostname)
+        return fallback.lookup(hostname)
     }
 
     private companion object {

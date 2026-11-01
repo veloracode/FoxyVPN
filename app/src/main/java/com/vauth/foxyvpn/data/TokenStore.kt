@@ -1,77 +1,82 @@
 package com.vauth.foxyvpn.data
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.vauth.foxyvpn.data.model.RuntimeAuth
-import com.vauth.foxyvpn.data.model.VpnAccount
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
 
 private const val TAG = "TokenStore"
 
-private val accountsJson = Json { ignoreUnknownKeys = true }
-
 class TokenStore(context: Context) {
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    private val mutableStorageError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val storageError: kotlinx.coroutines.flow.StateFlow<String?> = mutableStorageError
+    private val appContext = context.applicationContext
+    private val prefs by lazy { SecurePreferences(appContext, "foxyvpn_tokens", ::storageFailure) }
 
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "foxyvpn_tokens",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
-
-    // Cumulative per-account byte usage. Plain prefs (not sensitive), keyed
-    // by account id. Accumulated from the pool's live stats so the quota bar
-    // survives reconnects; reset when the server reports a fresh quota.
-    private val usagePrefs = context.getSharedPreferences("foxyvpn_usage", Context.MODE_PRIVATE)
-    private val _usageFlow = MutableStateFlow(loadUsage())
-    val usageFlow: StateFlow<Map<String, Long>> = _usageFlow
-
-    fun getUsedBytes(accountId: String): Long = _usageFlow.value[accountId] ?: 0L
-
-    fun addUsedBytes(accountId: String, deltaBytes: Long) {
-        if (deltaBytes <= 0L) return
-        val next = (_usageFlow.value[accountId] ?: 0L) + deltaBytes
-        usagePrefs.edit().putLong(usageKey(accountId), next).apply()
-        _usageFlow.value = _usageFlow.value + (accountId to next)
+    private fun storageFailure(error: Exception): SecureStorageException {
+        val failure = error as? SecureStorageException ?: SecureStorageException(error)
+        mutableStorageError.value = failure.message
+        return failure
     }
 
-    fun resetUsedBytes(accountId: String) {
-        usagePrefs.edit().remove(usageKey(accountId)).apply()
-        _usageFlow.value = _usageFlow.value - accountId
+    val sessionEpoch: Long
+        get() = epoch
+
+    private val invalidationListener =
+        java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+    var onSessionInvalidated: (() -> Unit)?
+        get() = invalidationListener.get()
+        set(value) {
+            invalidationListener.set(value)
+        }
+
+    fun clearSessionInvalidationListener(expected: () -> Unit) {
+        invalidationListener.compareAndSet(expected, null)
     }
 
-    private fun usageKey(accountId: String) = "used_$accountId"
+    fun <T> withCurrentSession(expectedEpoch: Long, block: () -> T): T =
+        synchronized(sessionLock) {
+            check(epoch == expectedEpoch && hasStoredSession()) { "Session changed" }
+            block()
+        }
 
-    private fun loadUsage(): Map<String, Long> =
-        usagePrefs.all.mapNotNull { (k, v) ->
-            if (k.startsWith("used_") && v is Long) k.removePrefix("used_") to v else null
-        }.toMap()
+    fun saveAuthIfCurrent(auth: RuntimeAuth, expectedEpoch: Long) =
+        synchronized(sessionLock) {
+            check(epoch == expectedEpoch) {
+                "Session changed while credentials were being refreshed"
+            }
+            saveAuth(auth)
+        }
 
-    fun saveAuth(auth: RuntimeAuth) {
-        prefs.edit()
-            .putString(KEY_ACCESS_TOKEN, auth.accessToken)
-            .putString(KEY_REFRESH_TOKEN, auth.refreshToken)
-            .putLong(KEY_EXPIRES_AT, auth.expiresAtEpochSeconds)
-            .apply()
-    }
+    private fun saveAuth(auth: RuntimeAuth) =
+        synchronized(sessionLock) {
+            prefs
+                .edit()
+                .putString(KEY_ACCESS_TOKEN, auth.accessToken)
+                .putString(KEY_REFRESH_TOKEN, auth.refreshToken)
+                .putLong(KEY_EXPIRES_AT, auth.expiresAtEpochSeconds)
+                .commit()
+        }
 
-    fun loadAuth(): RuntimeAuth? = runCatching {
-        val access = prefs.getString(KEY_ACCESS_TOKEN, null)?.takeIf { it.isNotBlank() } ?: return@runCatching null
-        val refresh = prefs.getString(KEY_REFRESH_TOKEN, null)?.takeIf { it.isNotBlank() }
-        val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
-        RuntimeAuth(access, refresh, expiresAt)
-    }.onFailure {
-        AppLogger.w(TAG, "could not read the stored session", it)
-    }.getOrNull()
+    fun loadAuth(): RuntimeAuth? =
+        synchronized(sessionLock) {
+            runCatching {
+                    val access = prefs.getString(KEY_ACCESS_TOKEN, null)?.takeIf { it.isNotBlank() }
+                    mutableStorageError.value = null
+                    if (access == null) return@runCatching null
+                    val refresh =
+                        prefs.getString(KEY_REFRESH_TOKEN, null)?.takeIf { it.isNotBlank() }
+                    val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
+                    mutableStorageError.value = null
+                    RuntimeAuth(access, refresh, expiresAt)
+                }
+                .onFailure {
+                    storageFailure(
+                        it as? Exception ?: IllegalStateException("Could not read credentials", it)
+                    )
+                    AppLogger.w(TAG, "could not read the stored session", it)
+                }
+                .getOrNull()
+        }
 
     fun hasValidAccessToken(): Boolean {
         val auth = loadAuth() ?: return false
@@ -82,171 +87,41 @@ class TokenStore(context: Context) {
 
     fun hasStoredSession(): Boolean = loadAuth() != null
 
-    fun hasRefreshToken(): Boolean = loadAuth()?.refreshToken != null
-
-    /**
-     * FULL wipe of every stored account, the legacy session, the pending
-     * sign-in and all usage stats. Only for the explicit global sign-out —
-     * per-account removal is [removeAccount], and a dead legacy session is
-     * dropped with [clearLegacySession]; neither of those may call this.
-     */
-    @Synchronized
-    fun clearAll() {
-        prefs.edit().clear().apply()
-        usagePrefs.edit().clear().apply()
-        _usageFlow.value = emptyMap()
-        _accountsFlow.value = emptyList()
+    fun clear() {
+        clearIfCurrent(null)
     }
 
-    /**
-     * Clears ONLY the legacy single-session keys. The multi-account list
-     * (accounts_json_v1) and usage stats are NEVER touched here.
-     *
-     * Background: restoreSession() used to call clear() when the legacy
-     * session died, which wiped every saved account on every cold start —
-     * the "close the app, lose everything" bug.
-     */
-    fun clearLegacySession() {
-        prefs.edit()
-            .remove(KEY_ACCESS_TOKEN)
-            .remove(KEY_REFRESH_TOKEN)
-            .remove(KEY_EXPIRES_AT)
-            .apply()
+    fun clearIfCurrent(expectedEpoch: Long?): Boolean {
+        val listener =
+            synchronized(sessionLock) {
+                if (expectedEpoch != null && epoch != expectedEpoch) return false
+                prefs.edit().clear().commit()
+                epoch++
+                onSessionInvalidated
+            }
+        listener?.invoke()
+        return true
     }
 
-    // ------------------------------------------------------------------
-    // Pending sign-in. FxA now returns new-device sessions UNVERIFIED:
-    // the user must type an emailed code to finish signing in. The pending
-    // session is persisted (encrypted, same store as the accounts) so the
-    // flow survives the app process being killed while the user reads the
-    // code in their mail app — with an in-memory-only token, that normal
-    // round-trip destroyed the pending login and the code step dead-ended.
-    // ------------------------------------------------------------------
-
-    fun savePendingLogin(email: String, sessionToken: String, kind: String) {
-        prefs.edit()
-            .putString(KEY_PENDING_EMAIL, email)
-            .putString(KEY_PENDING_SESSION_TOKEN, sessionToken)
-            .putString(KEY_PENDING_KIND, kind)
-            .apply()
-    }
-
-    /** Returns (email, sessionToken, kind) or null when no sign-in is pending. */
-    fun loadPendingLogin(): Triple<String, String, String>? {
-        val email = prefs.getString(KEY_PENDING_EMAIL, null)?.takeIf { it.isNotBlank() } ?: return null
-        val token = prefs.getString(KEY_PENDING_SESSION_TOKEN, null)?.takeIf { it.isNotBlank() } ?: return null
-        val kind = prefs.getString(KEY_PENDING_KIND, null)?.takeIf { it.isNotBlank() } ?: return null
-        return Triple(email, token, kind)
-    }
-
-    fun clearPendingLogin() {
-        prefs.edit()
-            .remove(KEY_PENDING_EMAIL)
-            .remove(KEY_PENDING_SESSION_TOKEN)
-            .remove(KEY_PENDING_KIND)
-            .apply()
-    }
-
-    // ------------------------------------------------------------------
-    // Multi-account storage. Accounts live in the same encrypted prefs
-    // ("foxyvpn_tokens") as the legacy single session, serialized as JSON.
-    // ------------------------------------------------------------------
-
-    private val _accountsFlow = MutableStateFlow(loadAccounts())
-    val accountsFlow: StateFlow<List<VpnAccount>> = _accountsFlow
-
-    fun getAccounts(): List<VpnAccount> = _accountsFlow.value
-
-    fun getEnabledAccounts(): List<VpnAccount> = _accountsFlow.value.filter { it.isEnabled }
-
-    fun hasAnyAccount(): Boolean = _accountsFlow.value.isNotEmpty()
-
-    // The account mutators below are @Synchronized: each does a
-    // read-modify-write of _accountsFlow (read the list, change it, save it),
-    // and they are called from several coroutines at once (account screen,
-    // VPN service, quota refresh). Unsynchronized, two writers could read
-    // the same list and one update would silently overwrite the other.
-    // JVM monitors are reentrant, so the nested saveAccounts calls are fine.
-
-    @Synchronized
-    fun saveAccounts(accounts: List<VpnAccount>) {
-        val encoded = runCatching {
-            accountsJson.encodeToString(ListSerializer(VpnAccount.serializer()), accounts)
-        }.getOrElse {
-            AppLogger.w(TAG, "could not encode the account list", it)
-            return
+    fun completeLoginIfCurrent(auth: RuntimeAuth, expectedEpoch: Long) {
+        synchronized(sessionLock) {
+            check(epoch == expectedEpoch) { "Sign-in was superseded" }
+            prefs
+                .edit()
+                .putString(KEY_ACCESS_TOKEN, auth.accessToken)
+                .putString(KEY_REFRESH_TOKEN, auth.refreshToken)
+                .putLong(KEY_EXPIRES_AT, auth.expiresAtEpochSeconds)
+                .commit()
+            epoch++
         }
-        prefs.edit().putString(KEY_ACCOUNTS_JSON, encoded).apply()
-        _accountsFlow.value = accounts
-    }
-
-    @Synchronized
-    fun addAccount(account: VpnAccount) {
-        val current = _accountsFlow.value.toMutableList()
-        current.removeAll { it.id == account.id || it.email.equals(account.email, ignoreCase = true) }
-        current.add(account)
-        saveAccounts(current)
-    }
-
-    @Synchronized
-    fun addAccounts(accounts: List<VpnAccount>) {
-        if (accounts.isEmpty()) return
-        val current = _accountsFlow.value.toMutableList()
-        for (account in accounts) {
-            current.removeAll { it.id == account.id || it.email.equals(account.email, ignoreCase = true) }
-            current.add(account)
-        }
-        saveAccounts(current)
-    }
-
-    @Synchronized
-    fun removeAccount(id: String) {
-        saveAccounts(_accountsFlow.value.filterNot { it.id == id })
-        resetUsedBytes(id)
-    }
-
-    @Synchronized
-    fun toggleAccount(id: String, enabled: Boolean) {
-        saveAccounts(_accountsFlow.value.map { if (it.id == id) it.copy(isEnabled = enabled) else it })
-    }
-
-    @Synchronized
-    fun updateAccount(account: VpnAccount) {
-        saveAccounts(_accountsFlow.value.map { if (it.id == account.id) account else it })
-    }
-
-    private fun loadAccounts(): List<VpnAccount> {
-        val raw = prefs.getString(KEY_ACCOUNTS_JSON, null) ?: return emptyList()
-        return runCatching {
-            accountsJson.decodeFromString(ListSerializer(VpnAccount.serializer()), raw)
-        }.onFailure {
-            AppLogger.w(TAG, "could not decode the stored account list", it)
-        }.getOrDefault(emptyList())
-    }
-
-    /**
-     * First-run migration: wraps the legacy single session (if any) into the
-     * account list as "Primary Account" so existing installs keep working.
-     */
-    fun migrateLegacySessionIfPresent(): VpnAccount? {
-        if (hasAnyAccount()) return null
-        val legacy = loadAuth() ?: return null
-        val primary = VpnAccount(
-            email = "Primary Account",
-            auth = legacy,
-        )
-        saveAccounts(listOf(primary))
-        return primary
     }
 
     companion object {
+        private val sessionLock = Any()
+        @Volatile private var epoch = 0L
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_EXPIRES_AT = "expires_at"
-        private const val KEY_ACCOUNTS_JSON = "accounts_json_v1"
-        private const val KEY_PENDING_EMAIL = "pending_login_email"
-        private const val KEY_PENDING_SESSION_TOKEN = "pending_login_session_token"
-        private const val KEY_PENDING_KIND = "pending_login_kind"
 
         private const val CLOCK_SKEW_TOLERANCE_SECONDS = 60L
     }

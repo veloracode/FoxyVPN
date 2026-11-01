@@ -1,165 +1,155 @@
 package com.vauth.foxyvpn.data
 
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import com.vauth.foxyvpn.vpn.upstream.TlsClientHelloSplitter
-import java.io.FilterOutputStream
-import java.io.IOException
-import java.io.OutputStream
+import android.net.Network
+import android.webkit.CookieManager
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
-import java.net.UnknownHostException
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.net.SocketFactory
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
 
-private const val TAG = "ControlPlaneHttp"
-
-const val MOZILLA_VPN_USER_AGENT = "MozillaVPN/2.35.0 (sys:android 14; iap:true)"
-
-fun Request.Builder.applyMozillaVpnHeaders(): Request.Builder {
-    header("User-Agent", MOZILLA_VPN_USER_AGENT)
-    header("Accept", "application/json")
-    return this
-}
-
-const val FIREFOX_ANDROID_USER_AGENT =
-    "Mozilla/5.0 (Android 14; Mobile; rv:133.0) Gecko/133.0 Firefox/133.0"
-
-/**
- * Headers for Firefox Accounts calls. The FxA edge's bot protection
- * rejects the MozillaVPN client User-Agent with an empty 406 (verified
- * live: the same /oauth/token request returns 400 with a Firefox
- * User-Agent), which forced every FxA call into the JS challenge solver.
- * Guardian and the server list keep the VPN-client identity above; only
- * FxA calls present as Firefox.
- */
-fun Request.Builder.applyFxaHeaders(): Request.Builder {
-    header("User-Agent", FIREFOX_ANDROID_USER_AGENT)
-    header("Accept", "application/json")
-    return this
-}
+fun Request.Builder.applyFirefoxHeaders(): Request.Builder = FirefoxAccountHeaders.apply(this)
 
 class SimpleCookieJar : CookieJar {
-    private val byDomain = ConcurrentHashMap<String, MutableList<Cookie>>()
+    private val cookies = mutableListOf<Cookie>()
 
+    @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         for (cookie in cookies) {
-            val bucket = byDomain.getOrPut(cookie.domain) { mutableListOf() }
-            synchronized(bucket) {
-                bucket.removeAll { it.name == cookie.name }
-                bucket.add(cookie)
+            this.cookies.removeAll {
+                it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path
             }
+            if (cookie.expiresAt > System.currentTimeMillis()) this.cookies.add(cookie)
         }
     }
 
+    @Synchronized
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val now = System.currentTimeMillis()
-        val result = mutableListOf<Cookie>()
-        for ((domain, cookies) in byDomain) {
-            if (url.host == domain || url.host.endsWith(".$domain")) {
-                synchronized(cookies) {
-                    result.addAll(cookies.filter { it.expiresAt > now })
+        cookies.removeAll { it.expiresAt <= System.currentTimeMillis() }
+        return cookies
+            .filter { it.matches(url) }
+            .sortedByDescending { it.domain.length }
+            .distinctBy { it.name }
+    }
+
+    @Synchronized fun snapshotAll(): List<Cookie> = cookies.toList()
+
+    @Synchronized
+    fun clear() {
+        cookies.clear()
+    }
+
+    @Synchronized
+    fun syncFromWebView(
+        urls: List<String> =
+            listOf(
+                "https://accounts.firefox.com",
+                "https://api.accounts.firefox.com",
+                "https://oauth.accounts.firefox.com",
+                "https://vpn.mozilla.org",
+            ),
+    ) {
+        val manager = runCatching { CookieManager.getInstance() }.getOrNull() ?: return
+        for (urlStr in urls) {
+            val httpUrl = urlStr.toHttpUrlOrNull() ?: continue
+            val cookieHeader = runCatching { manager.getCookie(urlStr) }.getOrNull() ?: continue
+            val parsedCookies = mutableListOf<Cookie>()
+            for (raw in cookieHeader.split(";")) {
+                val trimmed = raw.trim()
+                if (trimmed.isEmpty()) continue
+                val eqIdx = trimmed.indexOf('=')
+                if (eqIdx <= 0) continue
+                val name = trimmed.substring(0, eqIdx).trim()
+                val value = trimmed.substring(eqIdx + 1).trim()
+                if (name.isEmpty() || value.isEmpty()) continue
+
+                val hostCookie =
+                    runCatching {
+                        Cookie.Builder()
+                            .name(name)
+                            .value(value)
+                            .domain(httpUrl.host)
+                            .path("/")
+                            .apply { if (httpUrl.isHttps) secure() }
+                            .build()
+                    }.getOrNull()
+                if (hostCookie != null) parsedCookies.add(hostCookie)
+
+                if (httpUrl.host.endsWith("firefox.com") && httpUrl.host != "firefox.com") {
+                    val domainCookie =
+                        runCatching {
+                            Cookie.Builder()
+                                .name(name)
+                                .value(value)
+                                .domain("firefox.com")
+                                .path("/")
+                                .apply { if (httpUrl.isHttps) secure() }
+                                .build()
+                        }.getOrNull()
+                    if (domainCookie != null) parsedCookies.add(domainCookie)
+                    for (target in listOf("api.accounts.firefox.com", "oauth.accounts.firefox.com", "vpn.mozilla.org")) {
+                        val targetCookie =
+                            runCatching {
+                                Cookie.Builder()
+                                    .name(name)
+                                    .value(value)
+                                    .domain(target)
+                                    .path("/")
+                                    .apply { if (httpUrl.isHttps) secure() }
+                                    .build()
+                            }.getOrNull()
+                        if (targetCookie != null) parsedCookies.add(targetCookie)
+                    }
                 }
             }
-        }
-        return result
-    }
-
-    fun set(name: String, value: String, domain: String) {
-        val bucket = byDomain.getOrPut(domain) { mutableListOf() }
-        synchronized(bucket) {
-            bucket.removeAll { it.name == name }
-            bucket.add(
-                Cookie.Builder()
-                    .name(name)
-                    .value(value)
-                    .domain(domain)
-                    .path("/")
-                    .expiresAt(Long.MAX_VALUE)
-                    .build(),
-            )
+            if (parsedCookies.isNotEmpty()) {
+                saveFromResponse(httpUrl, parsedCookies)
+            }
         }
     }
 
-    fun snapshotAll(): List<Cookie> = byDomain.values.flatten()
-}
-
-// Internal (not private) so unit tests can drive the stream directly;
-// visibility only — no behavior depends on it.
-internal class SplitClientHelloOutputStream(
-    out: OutputStream,
-    private val modeProvider: () -> SettingsStore.TlsSplitMode,
-    private val onSplit: () -> Unit = {},
-) : FilterOutputStream(out) {
-    private var splitDone = false
-
-    override fun write(b: ByteArray, off: Int, len: Int) {
-        val mode = modeProvider()
-        if (splitDone || mode == SettingsStore.TlsSplitMode.OFF) {
-            out.write(b, off, len)
-            return
+    @Synchronized
+    fun syncToWebView(cookies: List<Cookie>) {
+        val manager = runCatching { CookieManager.getInstance() }.getOrNull() ?: return
+        for (cookie in cookies) {
+            val host = cookie.domain.trimStart('.')
+            if (host.isEmpty()) continue
+            val urlStr = "https://$host"
+            val cookieString = StringBuilder().apply {
+                append(cookie.name).append("=").append(cookie.value)
+                append("; Domain=").append(cookie.domain)
+                append("; Path=").append(cookie.path)
+                if (cookie.secure) append("; Secure")
+                if (cookie.httpOnly) append("; HttpOnly")
+            }.toString()
+            runCatching { manager.setCookie(urlStr, cookieString) }
         }
-
-        if (!TlsClientHelloSplitter.looksLikeClientHello(b, off, len)) {
-            out.write(b, off, len)
-            return
-        }
-
-        splitDone = true
-        val segments = try {
-            TlsClientHelloSplitter.splitBytes(b, off, len, mode)
-        } catch (e: Throwable) {
-            null
-        }
-
-        if (segments.isNullOrEmpty()) {
-            out.write(b, off, len)
-            return
-        }
-
-        onSplit()
-        for (seg in segments) {
-            out.write(seg)
-            out.flush()
-        }
-    }
-
-    override fun write(b: ByteArray) {
-        write(b, 0, b.size)
+        runCatching { manager.flush() }
     }
 }
 
-// Internal (not private) so unit tests can drive the socket directly;
-// visibility only — no behavior depends on it.
-internal class SplitClientHelloSocket(
-    private val modeProvider: () -> SettingsStore.TlsSplitMode,
+/**
+ * A control-plane socket. With an account proxy configured, the
+ * connection is made to the SOCKS5 proxy instead and the handshake
+ * (inside this socket, so the factory's protect() applies to the proxy
+ * connection too) names the origin host — OkHttp's built-in SOCKS
+ * support cannot be used, as it creates the proxy socket itself and
+ * bypasses this socket factory entirely (no protect). Without a proxy
+ * this is the plain platform connect, unchanged.
+ */
+internal class ControlPlaneSocket(
     private val proxyProvider: () -> SettingsStore.ApiProxySettings? = { null },
 ) : Socket() {
-    // One wrapper per socket, as the split state must be shared by every
-    // getOutputStream() call (previously the state lived on the socket).
-    private var stream: OutputStream? = null
 
-    override fun getOutputStream(): OutputStream =
-        stream ?: SplitClientHelloOutputStream(super.getOutputStream(), modeProvider) {
-            runCatching { tcpNoDelay = true }
-        }.also { stream = it }
-
-    /**
-     * With an account proxy configured, the connection is made to the
-     * SOCKS5 proxy instead and the handshake (inside this socket, so the
-     * factory's protect() and the ClientHello splitter both apply)
-     * names the origin host — OkHttp's built-in SOCKS support cannot be
-     * used, as it creates the proxy socket itself and bypasses this
-     * socket factory entirely (no protect, no split). Without a proxy
-     * this is the plain platform connect, unchanged.
-     */
     override fun connect(endpoint: SocketAddress?, timeout: Int) {
         val proxy = proxyProvider()
         if (proxy == null || endpoint !is InetSocketAddress) {
@@ -168,7 +158,7 @@ internal class SplitClientHelloSocket(
         }
         val originHost = endpoint.hostString
         if (originHost.isNullOrEmpty() || originHost == "0.0.0.0") {
-            throw UnknownHostException("no origin host name for the proxied connection")
+            throw java.net.UnknownHostException("no origin host name for the proxied connection")
         }
         val proxyAddress = ProxyHostResolver.resolve(proxy.host)
         super.connect(InetSocketAddress(proxyAddress, proxy.port), timeout)
@@ -182,7 +172,7 @@ internal class SplitClientHelloSocket(
                 endpoint.port,
                 proxy,
             )
-        } catch (e: IOException) {
+        } catch (e: java.io.IOException) {
             runCatching { close() }
             throw e
         } finally {
@@ -197,69 +187,100 @@ internal class ProtectingSocketFactory(
     private val useApiProxy: Boolean = true,
 ) : SocketFactory() {
 
-    private fun createRawSocket(): Socket =
-        SplitClientHelloSocket(
-            modeProvider = { ControlPlaneHttp.tlsSplitModeProvider?.invoke() ?: SettingsStore.TlsSplitMode.OFF },
+    private fun createProtectedSocket(
+        localAddress: InetSocketAddress? = null,
+        remoteAddress: InetSocketAddress? = null,
+    ): Socket {
+        val socket = ControlPlaneSocket(
             proxyProvider = { if (useApiProxy) ControlPlaneHttp.apiProxyProvider?.invoke() else null },
         )
-
-    private fun protect(socket: Socket, localAddress: InetSocketAddress?): Socket {
-        runCatching {
-            if (!socket.isBound) socket.bind(localAddress ?: InetSocketAddress(0))
-        }.onFailure {
-            AppLogger.w(TAG, "could not bind a control-plane socket before protecting it", it)
-        }
-        val protector = ControlPlaneHttp.socketProtector
-        if (protector != null) {
-            val protectedOk = runCatching { protector.invoke(socket) }.getOrDefault(false)
-            if (!protectedOk) {
-                // Failing open would route the request back into the
-                // tunnel it is trying to bypass — refuse instead.
-                runCatching { socket.close() }
-                throw IOException("VpnService.protect() refused a control-plane socket")
+        try {
+            socket.bind(localAddress ?: InetSocketAddress(0))
+            val protector = ControlPlaneHttp.socketProtector
+            if (protector != null && !protector(socket)) {
+                throw java.io.IOException("VPN refused control-plane socket protection")
             }
+            ControlPlaneHttp.underlyingNetwork()?.bindSocket(socket)
+            if (remoteAddress != null) socket.connect(remoteAddress)
+            return socket
+        } catch (error: Exception) {
+            runCatching { socket.close() }.onFailure { error.addSuppressed(it) }
+            throw error
         }
-        return socket
     }
 
-    override fun createSocket(): Socket = protect(createRawSocket(), null)
+    override fun createSocket(): Socket = createProtectedSocket()
 
     override fun createSocket(host: String, port: Int): Socket =
-        protect(createRawSocket(), null).apply { connect(InetSocketAddress(host, port)) }
+        createProtectedSocket(remoteAddress = InetSocketAddress(host, port))
 
-    override fun createSocket(host: String, port: Int, localAddr: InetAddress, localPort: Int): Socket =
-        protect(createRawSocket(), InetSocketAddress(localAddr, localPort))
-            .apply { connect(InetSocketAddress(host, port)) }
+    override fun createSocket(
+        host: String,
+        port: Int,
+        localAddr: InetAddress,
+        localPort: Int,
+    ): Socket =
+        createProtectedSocket(
+            InetSocketAddress(localAddr, localPort),
+            InetSocketAddress(host, port),
+        )
 
     override fun createSocket(host: InetAddress, port: Int): Socket =
-        protect(createRawSocket(), null).apply { connect(InetSocketAddress(host, port)) }
+        createProtectedSocket(remoteAddress = InetSocketAddress(host, port))
 
-    override fun createSocket(host: InetAddress, port: Int, localAddr: InetAddress, localPort: Int): Socket =
-        protect(createRawSocket(), InetSocketAddress(localAddr, localPort))
-            .apply { connect(InetSocketAddress(host, port)) }
+    override fun createSocket(
+        host: InetAddress,
+        port: Int,
+        localAddr: InetAddress,
+        localPort: Int,
+    ): Socket =
+        createProtectedSocket(
+            InetSocketAddress(localAddr, localPort),
+            InetSocketAddress(host, port),
+        )
 }
 
 object ControlPlaneHttp {
     val cookieJar = SimpleCookieJar()
 
-    @Volatile
-    var socketProtector: ((Socket) -> Boolean)? = null
+    @Volatile var socketProtector: ((Socket) -> Boolean)? = null
 
-    @Volatile
-    var tlsSplitModeProvider: (() -> SettingsStore.TlsSplitMode)? = null
+    @Volatile var networkProvider: (() -> Network?)? = null
 
     /** The configured account (control-plane) SOCKS5 proxy, or null. Set by the app. */
-    @Volatile
-    var apiProxyProvider: (() -> SettingsStore.ApiProxySettings?)? = null
+    @Volatile var apiProxyProvider: (() -> SettingsStore.ApiProxySettings?)? = null
 
     /** The configured API relay base URL (normalized https), or null. Set by the app. */
-    @Volatile
-    var apiRelayProvider: (() -> String?)? = null
+    @Volatile var apiRelayProvider: (() -> String?)? = null
+
+    internal fun underlyingNetwork(): Network? {
+        val provider = networkProvider ?: return null
+        return provider() ?: throw java.io.IOException("No underlying network is available")
+    }
+
+    /** Upstream's resolver: the underlying physical network, SYSTEM fallback. */
+    private val networkDns =
+        object : okhttp3.Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                val network = runCatching { underlyingNetwork() }.getOrNull()
+                val fromNetwork =
+                    if (network != null) {
+                        runCatching { network.getAllByName(hostname).toList() }.getOrNull()
+                    } else {
+                        null
+                    }
+                return if (!fromNetwork.isNullOrEmpty()) {
+                    fromNetwork
+                } else {
+                    okhttp3.Dns.SYSTEM.lookup(hostname)
+                }
+            }
+        }
+
+    private val controlPlaneDns = ControlPlaneDns({ apiProxyProvider?.invoke() }, networkDns)
 
     /** Records whether each call's request was fully sent (relay guard). */
     val requestSentTracker = RequestSentTracker()
-
-    private val controlPlaneDns = ControlPlaneDns { apiProxyProvider?.invoke() }
 
     private val relayInterceptor = RelayFallbackInterceptor(
         relayProvider = {
@@ -286,11 +307,10 @@ object ControlPlaneHttp {
     fun onSettingsChanged() {
         relayInterceptor.clearStickiness()
         ProxyHostResolver.clearCache()
-        clientOrNull?.connectionPool?.evictAll()
+        if (clientOrNull != null) clientOrNull!!.connectionPool.evictAll()
     }
 
-    @Volatile
-    private var clientOrNull: OkHttpClient? = null
+    @Volatile private var clientOrNull: OkHttpClient? = null
 
     val client: OkHttpClient
         get() = clientOrNull ?: synchronized(this) {
@@ -299,6 +319,7 @@ object ControlPlaneHttp {
 
     private fun buildClient(): OkHttpClient =
         OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_1_1))
             .cookieJar(cookieJar)
             .socketFactory(ProtectingSocketFactory())
             .dns(controlPlaneDns)
@@ -315,7 +336,7 @@ object ControlPlaneHttp {
      * redirect following — cookies are copied by hand against the
      * original URL by the interceptor, and a relayed redirect is the
      * caller's to see. Socket factory, DNS, pool and dispatcher are
-     * shared, so the relay hop gets the same protect() / SOCKS / split
+     * shared, so the relay hop gets the same protect() / SOCKS
      * treatment as a direct connection.
      */
     val relayClient: OkHttpClient by lazy {

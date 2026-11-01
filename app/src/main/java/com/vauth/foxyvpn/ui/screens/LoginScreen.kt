@@ -1,16 +1,18 @@
 package com.vauth.foxyvpn.ui.screens
 
-import com.vauth.foxyvpn.ui.l10n.s
-
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -37,105 +39,87 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.vauth.foxyvpn.R
+import com.vauth.foxyvpn.data.AccountRepository
+import com.vauth.foxyvpn.data.AccountStore
 import com.vauth.foxyvpn.data.FxaAuthRepository
-import com.vauth.foxyvpn.data.isUnconfirmedSession
-import com.vauth.foxyvpn.data.model.BatchImportItemResult
+import com.vauth.foxyvpn.ui.LoginViewModel
+import com.vauth.foxyvpn.ui.l10n.s
 import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
     authRepository: FxaAuthRepository,
     onSignedIn: () -> Unit,
-    onOpenSettings: () -> Unit,
+    // Fork additions (optional so previews/tests keep the upstream shape):
+    // the pre-login settings gear and the account layer for batch import.
+    onOpenSettings: (() -> Unit)? = null,
+    accountRepository: AccountRepository? = null,
+    accountStore: AccountStore? = null,
 ) {
-    // ------------------------------------------------------------------
-    // Primary sign-in: the official Mozilla page in an in-app browser
-    // (upstream v1.0.8 flow). The legacy email/password form below it is
-    // kept as a secondary section; it posts to /account/login, the
-    // endpoint Mozilla's bot protection challenges hardest.
-    // ------------------------------------------------------------------
-    var browserStartUrl by rememberSaveable { mutableStateOf<String?>(null) }
-    var completingBrowserLogin by rememberSaveable { mutableStateOf(false) }
-    var browserError by rememberSaveable { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    fun startBrowserLogin() {
-        if (completingBrowserLogin) return
-        browserError = null
-        browserStartUrl = authRepository.getBrowserLoginUrl()
-    }
-
-    fun handleBrowserSession(sessionToken: String) {
-        if (completingBrowserLogin) return
-        completingBrowserLogin = true
-        browserError = null
-        scope.launch {
-            val result = authRepository.completeBrowserLogin(sessionToken)
-            completingBrowserLogin = false
-            result.onSuccess {
-                browserStartUrl = null
-                browserError = null
-                onSignedIn()
-            }.onFailure {
-                if (!it.isUnconfirmedSession()) {
-                    browserError = it.message ?: "Browser sign-in failed. Please try again."
-                }
-            }
-        }
-    }
+    val model: LoginViewModel =
+        androidx.lifecycle.viewmodel.compose.viewModel(
+            factory = remember(authRepository) { LoginViewModel.factory(authRepository) }
+        )
+    val uiState by model.uiState.collectAsStateWithLifecycle()
+    val browserStartUrl = uiState.browserStartUrl
+    val completingBrowserLogin = uiState.isLoading
+    val errorMessage = uiState.errorMessage
+    val storageError by authRepository.storageError.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(uiState.signedIn) { if (uiState.signedIn) onSignedIn() }
 
     if (browserStartUrl != null) {
         BrowserLoginScreen(
-            startUrl = browserStartUrl!!,
+            startUrl = browserStartUrl,
             busy = completingBrowserLogin,
-            errorMessage = browserError,
-            onSessionCaptured = ::handleBrowserSession,
-            onCanceled = {
-                browserStartUrl = null
-                completingBrowserLogin = false
-                browserError = null
-            },
+            authRepository = authRepository,
+            errorMessage = errorMessage,
+            onTokensCaptured = model::completeBrowserLoginWithTokens,
+            onSessionCaptured = model::completeBrowserLogin,
+            onCanceled = model::cancelVerification,
         )
         return
     }
 
     // ------------------------------------------------------------------
-    // Secondary sign-in: email + password (with the emailed confirmation
-    // code step), plus batch import. A sign-in that was interrupted at
-    // the code step is resumed right here: the pending session is
-    // persisted in the repository, not just in memory, so the section
-    // starts expanded whenever a pending login exists.
+    // Fork additions: secondary sign-in (email + password with the
+    // emailed confirmation-code step) plus batch import. A sign-in
+    // interrupted at the code step resumes right here: the pending
+    // session is persisted in the repository, not just in memory, so
+    // the section starts expanded whenever a pending login exists.
     // ------------------------------------------------------------------
+    val scope = rememberCoroutineScope()
     var legacyExpanded by rememberSaveable {
         mutableStateOf(authRepository.pendingLogin() != null)
     }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
+    var legacyEmail by remember { mutableStateOf("") }
+    var legacyPassword by remember { mutableStateOf("") }
+    var legacyCode by remember { mutableStateOf("") }
     var awaitingTwoFactor by remember { mutableStateOf(authRepository.pendingLogin() != null) }
     var pendingEmail by remember {
         mutableStateOf(authRepository.pendingLogin()?.email?.takeIf { it.isNotBlank() })
     }
-    var isLoading by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var notice by remember { mutableStateOf<String?>(null) }
+    var legacyLoading by remember { mutableStateOf(false) }
+    var legacyError by remember { mutableStateOf<String?>(null) }
+    var legacyNotice by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
 
     fun doSubmitLogin() {
-        val cleanEmail = FxaAuthRepository.normalizeEmail(email)
-        if (cleanEmail.isBlank() || password.isBlank() || isLoading) return
-        errorMessage = null
-        notice = null
-        isLoading = true
+        val cleanEmail = FxaAuthRepository.normalizeEmail(legacyEmail)
+        if (cleanEmail.isBlank() || legacyPassword.isBlank() || legacyLoading) return
+        legacyError = null
+        legacyNotice = null
+        legacyLoading = true
         scope.launch {
-            val result = authRepository.startLogin(cleanEmail, password)
-            isLoading = false
+            val result = authRepository.startLogin(cleanEmail, legacyPassword)
+            legacyLoading = false
             result.onSuccess { needsVerification ->
                 if (needsVerification) {
                     pendingEmail = cleanEmail
@@ -143,259 +127,294 @@ fun LoginScreen(
                 } else {
                     onSignedIn()
                 }
-            }.onFailure { errorMessage = it.message ?: "Sign-in failed" }
+            }.onFailure { legacyError = it.message ?: "Sign-in failed" }
         }
     }
 
     fun doSubmitTwoFactor() {
-        val cleanCode = FxaAuthRepository.sanitizeCode(code)
-        if (cleanCode.isBlank() || isLoading) return
-        errorMessage = null
-        isLoading = true
+        val cleanCode = FxaAuthRepository.sanitizeCode(legacyCode)
+        if (cleanCode.isBlank() || legacyLoading) return
+        val kind = authRepository.pendingLogin()?.kind
+        legacyError = null
+        legacyLoading = true
         scope.launch {
             val result = authRepository.submitTwoFactorCode(cleanCode)
-            isLoading = false
-            result.onSuccess { onSignedIn() }
-                .onFailure { errorMessage = it.message ?: "Verification failed" }
+            legacyLoading = false
+            result.onSuccess {
+                if (kind == FxaAuthRepository.PendingKind.ACCOUNT) {
+                    // An account add/import finished, not a sign-in:
+                    // stay here and say so.
+                    awaitingTwoFactor = false
+                    pendingEmail = null
+                    legacyCode = ""
+                    legacyNotice = "Account added. Sign in to use it."
+                } else {
+                    onSignedIn()
+                }
+            }.onFailure { legacyError = it.message ?: "Verification failed" }
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
+    // Batch import ends here: with v2's single-session core, the first
+    // imported account is installed as the session so the flow still
+    // lands the user inside the app, as it did in the v1 fork.
+    val activateFirstImported: () -> Unit = {
+        val repo = accountRepository
+        val store = accountStore
+        if (repo != null && store != null) {
+            store.getAccounts().firstOrNull { it.isEnabled }?.let { first ->
+                if (repo.switchTo(first.id)) onSignedIn()
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding(),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(s("Sign in with Firefox"), style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.padding(top = 8.dp))
-        Text(
-            "FoxyVPN runs on the free 50 GB of monthly VPN traffic Mozilla includes with a Firefox account. No subscription is required.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.padding(top = 24.dp))
-
-        Button(
-            onClick = { startBrowserLogin() },
-            enabled = !completingBrowserLogin,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(s("Sign in with Firefox"))
-        }
-        Text(
-            s("Opens the official Mozilla sign-in page in an in-app browser and returns automatically once you are signed in."),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-
-        browserError?.let {
-            Spacer(Modifier.padding(top = 12.dp))
-            Text(
-                text = it,
-                color = MaterialTheme.colorScheme.error,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
+        Column(
+            modifier =
+                Modifier.widthIn(max = 520.dp)
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                stringResource(R.string.login_title),
+                style = MaterialTheme.typography.headlineMedium,
             )
-        }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.login_desc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            storageError?.let {
+                Spacer(Modifier.height(12.dp))
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
+            Spacer(Modifier.height(24.dp))
 
-        Spacer(Modifier.padding(top = 20.dp))
-        HorizontalDivider()
-        Spacer(Modifier.padding(top = 20.dp))
-
-        if (!legacyExpanded) {
-            OutlinedButton(
-                onClick = { legacyExpanded = true },
+            Button(
+                onClick = model::startBrowserLogin,
+                enabled = !completingBrowserLogin,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(s("Sign in with email and password"))
+                Text(stringResource(R.string.login_btn_sign_in))
             }
-        } else {
             Text(
-                s("Sign in with email and password"),
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center,
+                stringResource(R.string.login_help),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
             )
-            Spacer(Modifier.padding(top = 16.dp))
-
-            if (!awaitingTwoFactor) {
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = {
-                        email = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").lowercase()
-                    },
-                    label = { Text(s("Firefox account email")) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Email,
-                        imeAction = ImeAction.Next,
-                        autoCorrectEnabled = false,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onNext = { focusManager.moveFocus(FocusDirection.Down) }
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.padding(top = 12.dp))
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = {
-                        password = it.replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
-                    },
-                    label = { Text(s("Password")) },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            focusManager.clearFocus()
-                            doSubmitLogin()
-                        }
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.padding(top = 20.dp))
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        doSubmitLogin()
-                    },
-                    enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (isLoading) CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp)) else Text(s("Continue"))
-                }
-                Spacer(Modifier.padding(top = 8.dp))
-                AccountHelpRow()
-            } else {
-                Text(s("Enter the confirmation code sent to your email"), style = MaterialTheme.typography.bodyMedium)
-                pendingEmail?.let {
-                    Spacer(Modifier.padding(top = 4.dp))
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.padding(top = 12.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = {
-                        code = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "")
-                    },
-                    label = { Text(s("Confirmation code")) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.NumberPassword,
-                        imeAction = ImeAction.Done,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            focusManager.clearFocus()
-                            doSubmitTwoFactor()
-                        }
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.padding(top = 20.dp))
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        doSubmitTwoFactor()
-                    },
-                    enabled = !isLoading && code.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (isLoading) CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp)) else Text(s("Verify"))
-                }
-                Spacer(Modifier.padding(top = 8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            errorMessage = null
-                            scope.launch {
-                                authRepository.resendPendingCode()
-                                    .onSuccess { notice = "A new code was sent." }
-                                    .onFailure { errorMessage = it.message ?: "Could not resend the code" }
-                            }
-                        },
-                        enabled = !isLoading,
-                    ) {
-                        Text(s("Resend code"))
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            authRepository.abandonPendingLogin()
-                            awaitingTwoFactor = false
-                            pendingEmail = null
-                            code = ""
-                            errorMessage = null
-                            notice = null
-                        },
-                        enabled = !isLoading,
-                    ) {
-                        Text(s("Start over"))
-                    }
-                }
-            }
-
-            notice?.let {
-                Spacer(Modifier.padding(top = 12.dp))
-                Text(
-                    text = it,
-                    color = MaterialTheme.colorScheme.primary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                )
-            }
 
             errorMessage?.let {
-                Spacer(Modifier.padding(top = 12.dp))
+                Spacer(Modifier.height(12.dp))
                 Text(
                     text = it,
                     color = MaterialTheme.colorScheme.error,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 )
             }
+
+            // ---- Fork addition: secondary sign-in + batch import ----
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(20.dp))
+
+            if (!legacyExpanded) {
+                OutlinedButton(
+                    onClick = { legacyExpanded = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(s("Sign in with email and password"))
+                }
+            } else {
+                Text(
+                    s("Sign in with email and password"),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(16.dp))
+
+                if (!awaitingTwoFactor) {
+                    OutlinedTextField(
+                        value = legacyEmail,
+                        onValueChange = {
+                            legacyEmail = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").lowercase()
+                        },
+                        label = { Text(s("Firefox account email")) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Email,
+                            imeAction = ImeAction.Next,
+                            autoCorrectEnabled = false,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = legacyPassword,
+                        onValueChange = { legacyPassword = it },
+                        label = { Text(s("Password")) },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                focusManager.clearFocus()
+                                doSubmitLogin()
+                            }
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(
+                        onClick = {
+                            focusManager.clearFocus()
+                            doSubmitLogin()
+                        },
+                        enabled = !legacyLoading && legacyEmail.isNotBlank() && legacyPassword.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (legacyLoading) {
+                            CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                        } else {
+                            Text(s("Continue"))
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    AccountHelpRow()
+                } else {
+                    Text(s("Enter the confirmation code sent to your email"), style = MaterialTheme.typography.bodyMedium)
+                    pendingEmail?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = legacyCode,
+                        onValueChange = {
+                            legacyCode = it.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "")
+                        },
+                        label = { Text(s("Confirmation code")) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.NumberPassword,
+                            imeAction = ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                focusManager.clearFocus()
+                                doSubmitTwoFactor()
+                            }
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(
+                        onClick = {
+                            focusManager.clearFocus()
+                            doSubmitTwoFactor()
+                        },
+                        enabled = !legacyLoading && legacyCode.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (legacyLoading) {
+                            CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                        } else {
+                            Text(s("Verify"))
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                legacyError = null
+                                scope.launch {
+                                    authRepository.resendPendingCode()
+                                        .onSuccess { legacyNotice = "A new code was sent." }
+                                        .onFailure { legacyError = it.message ?: "Could not resend the code" }
+                                }
+                            },
+                            enabled = !legacyLoading,
+                        ) {
+                            Text(s("Resend code"))
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                authRepository.abandonPendingLogin()
+                                awaitingTwoFactor = false
+                                pendingEmail = null
+                                legacyCode = ""
+                                legacyError = null
+                                legacyNotice = null
+                            },
+                            enabled = !legacyLoading,
+                        ) {
+                            Text(s("Start over"))
+                        }
+                    }
+                }
+
+                legacyNotice?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
+                }
+
+                legacyError?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            BatchImportSection(
+                authRepository = authRepository,
+                onImported = activateFirstImported,
+            )
         }
 
-        Spacer(Modifier.padding(top = 20.dp))
-        BatchImportSection(
-            authRepository = authRepository,
-            onImported = onSignedIn,
-        )
-    }
-
-        // Settings must be reachable before sign-in: the connection
-        // options used when Mozilla cannot be reached live there, and a
-        // user blocked at sign-in has no other way to them.
-        IconButton(
-            onClick = onOpenSettings,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Settings,
-                contentDescription = "Settings",
-            )
+        // Fork addition: settings must be reachable before sign-in —
+        // the anti-block options used when Mozilla cannot be reached
+        // live there, and a blocked user has no other way to them.
+        if (onOpenSettings != null) {
+            IconButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "Settings",
+                )
+            }
         }
     }
 }
@@ -423,7 +442,7 @@ private fun BatchImportSection(
         modifier = Modifier.fillMaxWidth(),
         textAlign = TextAlign.Center,
     )
-    Spacer(Modifier.padding(top = 8.dp))
+    Spacer(Modifier.height(8.dp))
     GuidedBatchImport(
         authRepository = authRepository,
         onImported = onImported,

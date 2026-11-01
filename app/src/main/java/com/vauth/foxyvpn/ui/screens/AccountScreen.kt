@@ -68,29 +68,30 @@ import androidx.compose.ui.window.Dialog
 import com.vauth.foxyvpn.data.FxaAuthRepository
 import com.vauth.foxyvpn.data.GUARDIAN_ENDPOINT_DEFAULT
 import com.vauth.foxyvpn.data.GuardianClient
-import com.vauth.foxyvpn.data.TokenStore
+import com.vauth.foxyvpn.data.AccountStore
 import com.vauth.foxyvpn.data.formatBytes
-import com.vauth.foxyvpn.data.formatBytesPerSecond
-import com.vauth.foxyvpn.data.model.AccountLiveStats
 import com.vauth.foxyvpn.data.model.BatchImportItemResult
 import com.vauth.foxyvpn.data.model.VpnAccount
-import com.vauth.foxyvpn.ui.theme.AppearanceController
-import com.vauth.foxyvpn.vpn.FoxyVpnService
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun AccountScreen(
     authRepository: FxaAuthRepository,
-    tokenStore: TokenStore,
-    appearance: AppearanceController,
+    accountStore: AccountStore,
+    onSwitchAccount: (VpnAccount) -> Unit,
+    onRemoveAccount: (VpnAccount) -> Unit,
     onBack: () -> Unit,
 ) {
+    // Fork screen, re-layered on the v2 port's storage split: the account
+    // list lives in AccountStore; exactly one account is ACTIVE — its
+    // credentials are the session in upstream's TokenStore, and the VPN
+    // connects with it. (The v1 fork's simultaneous session pool has no
+    // v2 counterpart and was dropped with the sing-box core migration.)
     val scope = rememberCoroutineScope()
-    val accounts by tokenStore.accountsFlow.collectAsState()
-    val liveStats by FoxyVpnService.multiAccountStats.collectAsState()
-    val usage by tokenStore.usageFlow.collectAsState()
-    val statsById = remember(liveStats) { liveStats.associateBy { it.accountId } }
+    val accounts by accountStore.accountsFlow.collectAsState()
+    val activeAccountId by accountStore.activeAccountIdFlow.collectAsState()
+    val usage by accountStore.usageFlow.collectAsState()
 
     var showImportSheet by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
@@ -99,7 +100,7 @@ fun AccountScreen(
     var pendingDelete by remember { mutableStateOf<VpnAccount?>(null) }
 
     fun doDelete(account: VpnAccount) {
-        tokenStore.removeAccount(account.id)
+        onRemoveAccount(account)
     }
 
     fun refreshQuotas() {
@@ -107,7 +108,7 @@ fun AccountScreen(
         banner = null
         scope.launch {
             var ok = 0
-            for (account in tokenStore.getAccounts()) {
+            for (account in accountStore.getAccounts()) {
                 val renewed = runCatching {
                     authRepository.ensureFreshAccessTokenForAccount(account, force = false)
                 }.getOrNull() ?: account.auth
@@ -115,22 +116,21 @@ fun AccountScreen(
                     GuardianClient().fetchUserInfo(GUARDIAN_ENDPOINT_DEFAULT, renewed.accessToken)
                 }.getOrNull()
                 if (entitlement != null) {
-                    tokenStore.updateAccount(
+                    accountStore.updateAccount(
                         account.copy(
                             auth = renewed,
                             quotaRemaining = entitlement.quotaRemaining,
-                            uid = entitlement.uid.ifBlank { null },
                             lastError = null,
                         ),
                     )
                     // Server quota is authoritative — drop locally counted usage.
-                    tokenStore.resetUsedBytes(account.id)
+                    accountStore.resetUsedBytes(account.id)
                     ok++
                 } else {
-                    tokenStore.updateAccount(account.copy(lastError = "Quota refresh failed"))
+                    accountStore.updateAccount(account.copy(lastError = "Quota refresh failed"))
                 }
             }
-            banner = "Updated $ok of ${tokenStore.getAccounts().size} account(s)."
+            banner = "Updated $ok of ${accountStore.getAccounts().size} account(s)."
             refreshingQuotas = false
         }
     }
@@ -209,14 +209,12 @@ fun AccountScreen(
                     items(accounts, key = { it.id }) { account ->
                         AccountCard(
                             account = account,
-                            stats = statsById[account.id],
+                            isActive = account.id == activeAccountId,
                             usedBytes = usage[account.id] ?: 0L,
-                            corner = appearance.personalization.cornerStyle.cardDp.dp,
-                            onToggle = { tokenStore.toggleAccount(account.id, !account.isEnabled) },
-                            onDelete = {
-                                if (appearance.confirmRemove) pendingDelete = account
-                                else doDelete(account)
-                            },
+                            corner = 20.dp,
+                            onToggle = { accountStore.toggleAccount(account.id, !account.isEnabled) },
+                            onUse = { onSwitchAccount(account) },
+                            onDelete = { pendingDelete = account },
                         )
                     }
                     item { Spacer(Modifier.height(16.dp)) }
@@ -296,17 +294,17 @@ private fun EmptyAccountsHint() {
 @Composable
 private fun AccountCard(
     account: VpnAccount,
-    stats: AccountLiveStats?,
+    isActive: Boolean,
     usedBytes: Long,
     corner: androidx.compose.ui.unit.Dp,
     onToggle: () -> Unit,
+    onUse: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
     val dotTarget = when {
         !account.isEnabled -> cs.outlineVariant
-        stats?.isExhausted == true -> cs.error
-        stats?.isConnected == true -> cs.primary
+        isActive -> cs.primary
         else -> cs.outline
     }
     val dot by animateColorAsState(dotTarget, tween(300), label = "card-dot")
@@ -371,20 +369,18 @@ private fun AccountCard(
                 color = cs.onSurfaceVariant,
             )
 
-            // Live per-account stats.
-            if (stats != null && account.isEnabled) {
-                Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(6.dp))
+            if (isActive) {
                 Text(
-                    when {
-                        stats.isExhausted -> "Quota exhausted"
-                        !stats.isConnected -> "Not connected"
-                        else -> "↓ ${formatBytesPerSecond(stats.speedDownBytesPerSec)} · " +
-                            "↑ ${formatBytesPerSecond(stats.speedUpBytesPerSec)} · " +
-                            "${stats.activeStreams} streams"
-                    },
+                    s("Active account"),
                     style = MaterialTheme.typography.labelMedium,
-                    color = cs.onSurfaceVariant,
+                    color = cs.primary,
                 )
+            } else {
+                TextButton(
+                    onClick = onUse,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) { Text(s("Use this account")) }
             }
 
             account.lastError?.let {

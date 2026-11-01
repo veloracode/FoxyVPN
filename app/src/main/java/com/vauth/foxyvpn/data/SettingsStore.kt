@@ -1,253 +1,209 @@
 package com.vauth.foxyvpn.data
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
-import com.vauth.foxyvpn.ui.theme.AppLanguage
-import com.vauth.foxyvpn.ui.theme.CardCornerStyle
-import com.vauth.foxyvpn.ui.theme.ColorContrast
-import com.vauth.foxyvpn.ui.theme.ColorStyle
-import com.vauth.foxyvpn.ui.theme.DEFAULT_ACCENT_INDEX
-import com.vauth.foxyvpn.ui.theme.ConnectButtonStyle
-import com.vauth.foxyvpn.ui.theme.ListDensity
-import com.vauth.foxyvpn.ui.theme.NavBarStyle
-import com.vauth.foxyvpn.ui.theme.ScreenTransition
-import com.vauth.foxyvpn.ui.theme.ThemeMode
-import com.vauth.foxyvpn.ui.theme.UiFontScale
-import com.vauth.foxyvpn.vpn.FoxyVpnService
-import com.vauth.foxyvpn.widget.QuickConnectWidgetProvider
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class SettingsStore(context: Context) {
+    internal val proxySettingsLock = Any()
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("foxyvpn_settings", Context.MODE_PRIVATE)
 
+    private fun <T> readCredential(block: () -> T): T =
+        try {
+            block()
+        } catch (error: Exception) {
+            throw error as? SecureStorageException ?: SecureStorageException(error)
+        }
+
     private val credentialsPrefs by lazy {
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            appContext,
-            "foxyvpn_settings_credentials",
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+        SecurePreferences(appContext, "foxyvpn_settings_credentials")
     }
 
+    data class AccountSnapshot(
+        val realIp: String?,
+        val country: String?,
+        val quotaRemaining: Long?,
+        val quotaMax: Long?,
+        val unlimited: Boolean,
+    )
+
+    private fun accountSnapshot() =
+        AccountSnapshot(
+            cachedRealIp,
+            cachedRealCountry,
+            cachedQuotaRemaining,
+            cachedQuotaMax,
+            cachedIsUnlimited,
+        )
+
+    private val mutableAccount = kotlinx.coroutines.flow.MutableStateFlow(accountSnapshot())
+    val account: kotlinx.coroutines.flow.StateFlow<AccountSnapshot> = mutableAccount
+
+    private val accountListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (
+                key == null ||
+                    key in
+                        setOf(
+                            KEY_CACHED_REAL_IP,
+                            KEY_CACHED_REAL_COUNTRY,
+                            KEY_CACHED_QUOTA_REMAINING,
+                            KEY_CACHED_QUOTA_MAX,
+                            KEY_CACHED_IS_UNLIMITED,
+                        )
+            ) {
+                mutableAccount.value = accountSnapshot()
+            }
+        }
+
+    init {
+
+        if (prefs.getString(KEY_DNS_PROVIDER, null) == "ADGUARD") {
+            prefs.edit().putString(KEY_DNS_PROVIDER, DnsProvider.GOOGLE.name).apply()
+        }
+        prefs.registerOnSharedPreferenceChangeListener(accountListener)
+    }
+
+    var bypassLocalNetwork: Boolean
+        get() = prefs.getBoolean("bypass_local_network", true)
+        set(value) {
+            prefs.edit().putBoolean("bypass_local_network", value).apply()
+        }
+
+    var automaticRecovery: Boolean
+        get() = prefs.getBoolean("automatic_recovery", false)
+        set(value) {
+            prefs.edit().putBoolean("automatic_recovery", value).apply()
+        }
+
     var themeMode: ThemeMode
-        get() = ThemeMode.entries.firstOrNull {
-            it.name == prefs.getString(KEY_THEME_MODE, null)
-        } ?: ThemeMode.SYSTEM
+        get() =
+            ThemeMode.entries.firstOrNull { it.name == prefs.getString(KEY_THEME_MODE, null) }
+                ?: ThemeMode.SYSTEM
         set(value) {
             prefs.edit().putString(KEY_THEME_MODE, value.name).apply()
-            QuickConnectWidgetProvider.updateAll(appContext, FoxyVpnService.state.value)
         }
 
-    var appDesign: AppDesign
-        get() = AppDesign.entries.firstOrNull {
-            it.name == prefs.getString(KEY_APP_DESIGN, null)
-        } ?: AppDesign.PIXEL
-        set(value) { prefs.edit().putString(KEY_APP_DESIGN, value.name).apply() }
-
-    // ------------------------------------------------------------------
-    // Interface / appearance settings (ported from ZedSecure's Ui page).
-    // Defaults match ZedSecure's defaults.
-    // ------------------------------------------------------------------
-
-    var colorStyle: ColorStyle
-        get() = ColorStyle.entries.firstOrNull {
-            it.name == prefs.getString(KEY_COLOR_STYLE, null)
-        } ?: ColorStyle.ZedSecure
-        set(value) { prefs.edit().putString(KEY_COLOR_STYLE, value.name).apply() }
-
-    var dynamicColor: Boolean
-        get() = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
-        set(value) { prefs.edit().putBoolean(KEY_DYNAMIC_COLOR, value).apply() }
-
-    var accentColorIndex: Int
-        get() = if (prefs.contains(KEY_ACCENT_COLOR_INDEX)) {
-            prefs.getInt(KEY_ACCENT_COLOR_INDEX, DEFAULT_ACCENT_INDEX)
-        } else {
-            DEFAULT_ACCENT_INDEX // Signal blue for fresh installs only
+    var latencyProbeUrl: String
+        get() =
+            prefs.getString(KEY_LATENCY_PROBE_URL, null)?.takeIf { isValidProbeUrl(it) }
+                ?: DEFAULT_LATENCY_PROBE_URL
+        set(value) {
+            val url = value.trim()
+            require(isValidProbeUrl(url)) {
+                "Latency endpoint must be HTTPS without credentials or fragment"
+            }
+            prefs.edit().putString(KEY_LATENCY_PROBE_URL, url).apply()
         }
-        set(value) { prefs.edit().putInt(KEY_ACCENT_COLOR_INDEX, value).apply() }
-
-    var hapticFeedback: Boolean
-        get() = prefs.getBoolean(KEY_HAPTIC_FEEDBACK, true) // default ON
-        set(value) { prefs.edit().putBoolean(KEY_HAPTIC_FEEDBACK, value).apply() }
-
-    var colorContrast: ColorContrast
-        get() = ColorContrast.entries.firstOrNull {
-            it.name == prefs.getString(KEY_COLOR_CONTRAST, null)
-        } ?: ColorContrast.Standard
-        set(value) { prefs.edit().putString(KEY_COLOR_CONTRAST, value.name).apply() }
-
-    var reduceMotion: Boolean
-        get() = prefs.getBoolean(KEY_REDUCE_MOTION, false)
-        set(value) { prefs.edit().putBoolean(KEY_REDUCE_MOTION, value).apply() }
-
-    var uiFontScale: UiFontScale
-        get() = UiFontScale.entries.firstOrNull {
-            it.name == prefs.getString(KEY_UI_FONT_SCALE, null)
-        } ?: UiFontScale.Normal
-        set(value) { prefs.edit().putString(KEY_UI_FONT_SCALE, value.name).apply() }
-
-    var appLanguage: AppLanguage
-        get() = AppLanguage.entries.firstOrNull {
-            it.name == prefs.getString(KEY_APP_LANGUAGE, null)
-        } ?: AppLanguage.System
-        set(value) { prefs.edit().putString(KEY_APP_LANGUAGE, value.name).apply() }
-
-    var screenTransition: ScreenTransition
-        get() = ScreenTransition.entries.firstOrNull {
-            it.name == prefs.getString(KEY_SCREEN_TRANSITION, null)
-        } ?: ScreenTransition.Push
-        set(value) { prefs.edit().putString(KEY_SCREEN_TRANSITION, value.name).apply() }
-
-    var navBarStyle: NavBarStyle
-        get() = NavBarStyle.entries.firstOrNull {
-            it.name == prefs.getString(KEY_NAV_BAR_STYLE, null)
-        } ?: NavBarStyle.ExpressivePill
-        set(value) { prefs.edit().putString(KEY_NAV_BAR_STYLE, value.name).apply() }
-
-    var connectButtonStyle: ConnectButtonStyle
-        get() = ConnectButtonStyle.entries.firstOrNull {
-            it.name == prefs.getString(KEY_CONNECT_BUTTON_STYLE, null)
-        } ?: ConnectButtonStyle.Hero
-        set(value) { prefs.edit().putString(KEY_CONNECT_BUTTON_STYLE, value.name).apply() }
-
-    var cardCornerStyle: CardCornerStyle
-        get() = CardCornerStyle.entries.firstOrNull {
-            it.name == prefs.getString(KEY_CARD_CORNER_STYLE, null)
-        } ?: CardCornerStyle.Rounded
-        set(value) { prefs.edit().putString(KEY_CARD_CORNER_STYLE, value.name).apply() }
-
-    var listDensity: ListDensity
-        get() = ListDensity.entries.firstOrNull {
-            it.name == prefs.getString(KEY_LIST_DENSITY, null)
-        } ?: ListDensity.Comfortable
-        set(value) { prefs.edit().putString(KEY_LIST_DENSITY, value.name).apply() }
-
-    var themeProfileId: String?
-        get() = prefs.getString(KEY_THEME_PROFILE_ID, null)
-        set(value) { prefs.edit().putString(KEY_THEME_PROFILE_ID, value).apply() }
-
-    var customConnectColor: Long
-        get() = prefs.getLong(KEY_CUSTOM_CONNECT_COLOR, UNSET_COLOR)
-        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONNECT_COLOR, value).apply() }
-
-    var customConnectedColor: Long
-        get() = prefs.getLong(KEY_CUSTOM_CONNECTED_COLOR, UNSET_COLOR)
-        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONNECTED_COLOR, value).apply() }
-
-    var customServerCardColor: Long
-        get() = prefs.getLong(KEY_CUSTOM_SERVER_CARD_COLOR, UNSET_COLOR)
-        set(value) { prefs.edit().putLong(KEY_CUSTOM_SERVER_CARD_COLOR, value).apply() }
-
-    var customServerActiveColor: Long
-        get() = prefs.getLong(KEY_CUSTOM_SERVER_ACTIVE_COLOR, UNSET_COLOR)
-        set(value) { prefs.edit().putLong(KEY_CUSTOM_SERVER_ACTIVE_COLOR, value).apply() }
-
-    var customConfigCardColor: Long
-        get() = prefs.getLong(KEY_CUSTOM_CONFIG_CARD_COLOR, UNSET_COLOR)
-        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONFIG_CARD_COLOR, value).apply() }
-
-    var customConfigCardTextColor: Long
-        get() = prefs.getLong(KEY_CUSTOM_CONFIG_CARD_TEXT_COLOR, UNSET_COLOR)
-        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONFIG_CARD_TEXT_COLOR, value).apply() }
-
-    var showServerPing: Boolean
-        get() = prefs.getBoolean(KEY_SHOW_SERVER_PING, true)
-        set(value) { prefs.edit().putBoolean(KEY_SHOW_SERVER_PING, value).apply() }
-
-    var showServerUsage: Boolean
-        get() = prefs.getBoolean(KEY_SHOW_SERVER_USAGE, true)
-        set(value) { prefs.edit().putBoolean(KEY_SHOW_SERVER_USAGE, value).apply() }
-
-    var monospaceAddress: Boolean
-        get() = prefs.getBoolean(KEY_MONOSPACE_ADDRESS, false)
-        set(value) { prefs.edit().putBoolean(KEY_MONOSPACE_ADDRESS, value).apply() }
-
-    var confirmRemove: Boolean
-        get() = prefs.getBoolean(KEY_CONFIRM_REMOVE, true)
-        set(value) { prefs.edit().putBoolean(KEY_CONFIRM_REMOVE, value).apply() }
-
-    var homeAfterSelect: Boolean
-        get() = prefs.getBoolean(KEY_HOME_AFTER_SELECT, false)
-        set(value) { prefs.edit().putBoolean(KEY_HOME_AFTER_SELECT, value).apply() }
-
-    var doubleColumnDisplay: Boolean
-        get() = prefs.getBoolean(KEY_DOUBLE_COLUMN_DISPLAY, false)
-        set(value) { prefs.edit().putBoolean(KEY_DOUBLE_COLUMN_DISPLAY, value).apply() }
-
-    var exitCheckEnabled: Boolean
-        get() = prefs.getBoolean(KEY_EXIT_CHECK, true)
-        set(value) { prefs.edit().putBoolean(KEY_EXIT_CHECK, value).apply() }
 
     var mtu: Int
         get() = prefs.getInt(KEY_CUSTOM_MTU, DEFAULT_MTU)
-        set(value) { prefs.edit().putInt(KEY_CUSTOM_MTU, value.coerceIn(MIN_MTU, MAX_MTU)).apply() }
+        set(value) {
+            prefs.edit().putInt(KEY_CUSTOM_MTU, value.coerceIn(MIN_MTU, MAX_MTU)).apply()
+        }
 
     var cachedRealIp: String?
         get() = prefs.getString(KEY_CACHED_REAL_IP, null)
-        set(value) { prefs.edit().putString(KEY_CACHED_REAL_IP, value).apply() }
+        set(value) {
+            prefs.edit().putString(KEY_CACHED_REAL_IP, value).apply()
+        }
 
     var cachedRealCountry: String?
         get() = prefs.getString(KEY_CACHED_REAL_COUNTRY, null)
-        set(value) { prefs.edit().putString(KEY_CACHED_REAL_COUNTRY, value).apply() }
+        set(value) {
+            prefs.edit().putString(KEY_CACHED_REAL_COUNTRY, value).apply()
+        }
 
     var cachedQuotaRemaining: Long?
-        get() = if (prefs.contains(KEY_CACHED_QUOTA_REMAINING)) prefs.getLong(KEY_CACHED_QUOTA_REMAINING, -1L).takeIf { it >= 0 } else null
+        get() =
+            if (prefs.contains(KEY_CACHED_QUOTA_REMAINING))
+                prefs.getLong(KEY_CACHED_QUOTA_REMAINING, -1L).takeIf { it >= 0 }
+            else null
         set(value) {
-            if (value != null && value >= 0) prefs.edit().putLong(KEY_CACHED_QUOTA_REMAINING, value).apply()
+            if (value != null && value >= 0)
+                prefs.edit().putLong(KEY_CACHED_QUOTA_REMAINING, value).apply()
             else prefs.edit().remove(KEY_CACHED_QUOTA_REMAINING).apply()
         }
 
     var cachedQuotaMax: Long?
-        get() = if (prefs.contains(KEY_CACHED_QUOTA_MAX)) prefs.getLong(KEY_CACHED_QUOTA_MAX, -1L).takeIf { it >= 0 } else null
+        get() =
+            if (prefs.contains(KEY_CACHED_QUOTA_MAX))
+                prefs.getLong(KEY_CACHED_QUOTA_MAX, -1L).takeIf { it >= 0 }
+            else null
         set(value) {
-            if (value != null && value >= 0) prefs.edit().putLong(KEY_CACHED_QUOTA_MAX, value).apply()
+            if (value != null && value >= 0)
+                prefs.edit().putLong(KEY_CACHED_QUOTA_MAX, value).apply()
             else prefs.edit().remove(KEY_CACHED_QUOTA_MAX).apply()
         }
 
     var cachedIsUnlimited: Boolean
         get() = prefs.getBoolean(KEY_CACHED_IS_UNLIMITED, false)
-        set(value) { prefs.edit().putBoolean(KEY_CACHED_IS_UNLIMITED, value).apply() }
+        set(value) {
+            prefs.edit().putBoolean(KEY_CACHED_IS_UNLIMITED, value).apply()
+        }
+
+    fun saveDirectAddress(ip: String, country: String) {
+        prefs
+            .edit()
+            .putString(KEY_CACHED_REAL_IP, ip)
+            .putString(KEY_CACHED_REAL_COUNTRY, country)
+            .apply()
+        mutableAccount.value = accountSnapshot()
+    }
+
+    fun saveAccountQuota(unlimited: Boolean, remaining: Long?, maximum: Long?) {
+        val editor = prefs.edit().putBoolean(KEY_CACHED_IS_UNLIMITED, unlimited)
+        if (remaining != null && remaining >= 0) {
+            editor.putLong(KEY_CACHED_QUOTA_REMAINING, remaining)
+        } else if (unlimited) {
+            editor.remove(KEY_CACHED_QUOTA_REMAINING)
+        }
+        if (maximum != null && maximum >= 0) {
+            editor.putLong(KEY_CACHED_QUOTA_MAX, maximum)
+        } else if (unlimited) {
+            editor.remove(KEY_CACHED_QUOTA_MAX)
+        }
+        editor.apply()
+        mutableAccount.value = accountSnapshot()
+    }
 
     fun clearAccountSession() {
-        prefs.edit()
+        prefs
+            .edit()
             .remove(KEY_CACHED_REAL_IP)
             .remove(KEY_CACHED_REAL_COUNTRY)
             .remove(KEY_CACHED_QUOTA_REMAINING)
             .remove(KEY_CACHED_QUOTA_MAX)
             .remove(KEY_CACHED_IS_UNLIMITED)
             .apply()
+        mutableAccount.value = accountSnapshot()
     }
 
-    var socksBindAddress: String
-        get() = prefs.getString(KEY_SOCKS_BIND_ADDRESS, DEFAULT_SOCKS_BIND_ADDRESS) ?: DEFAULT_SOCKS_BIND_ADDRESS
-        set(value) {
-            prefs.edit().putString(KEY_SOCKS_BIND_ADDRESS, value.ifBlank { DEFAULT_SOCKS_BIND_ADDRESS }).apply()
-        }
+    val socksBindAddress: String
+        get() = DEFAULT_SOCKS_BIND_ADDRESS
 
-    var socksPort: Int
-        get() = prefs.getInt(KEY_SOCKS_PORT, DEFAULT_SOCKS_PORT)
-        set(value) { prefs.edit().putInt(KEY_SOCKS_PORT, value.coerceIn(1, 65_535)).apply() }
-
-    var httpProxyEnabled: Boolean
-        get() = prefs.getBoolean(KEY_HTTP_PROXY_ENABLED, false)
-        set(value) { prefs.edit().putBoolean(KEY_HTTP_PROXY_ENABLED, value).apply() }
-
-    var httpProxyPort: Int
-        get() = prefs.getInt(KEY_HTTP_PROXY_PORT, DEFAULT_HTTP_PROXY_PORT)
-        set(value) { prefs.edit().putInt(KEY_HTTP_PROXY_PORT, value.coerceIn(1, 65_535)).apply() }
+    val socksPort: Int
+        get() =
+            if (localProxyAuthEnabled)
+                readCredential {
+                    credentialsPrefs
+                        .getLong(
+                            KEY_SOCKS_PORT,
+                            prefs.getInt(KEY_SOCKS_PORT, DEFAULT_SOCKS_PORT).toLong(),
+                        )
+                        .toInt()
+                }
+            else prefs.getInt(KEY_SOCKS_PORT, DEFAULT_SOCKS_PORT)
 
     var dnsProvider: DnsProvider
-        get() = DnsProvider.entries.firstOrNull {
-            it.name == prefs.getString(KEY_DNS_PROVIDER, null)
-        } ?: DnsProvider.SYSTEM_DEFAULT
-        set(value) { prefs.edit().putString(KEY_DNS_PROVIDER, value.name).apply() }
+        get() {
+            val saved = prefs.getString(KEY_DNS_PROVIDER, null)
+            if (saved == "SYSTEM_DEFAULT" || saved == null) return DnsProvider.GOOGLE
+            return DnsProvider.entries.firstOrNull { it.name == saved } ?: DnsProvider.GOOGLE
+        }
+        set(value) {
+            prefs.edit().putString(KEY_DNS_PROVIDER, value.name).apply()
+        }
 
     var customDohUrl: String
         get() = prefs.getString(KEY_CUSTOM_DOH_URL, "") ?: ""
@@ -257,40 +213,76 @@ class SettingsStore(context: Context) {
             prefs.edit().putString(KEY_CUSTOM_DOH_URL, trimmed).apply()
         }
 
-    val effectiveDohUrl: String?
-        get() = when (dnsProvider) {
-            DnsProvider.SYSTEM_DEFAULT -> null
-            DnsProvider.CUSTOM -> customDohUrl.takeIf { isValidDohUrl(it) }
-            else -> dnsProvider.dohUrl
+    fun saveDns(provider: DnsProvider, customUrl: String) {
+        val url = customUrl.trim()
+        require(provider != DnsProvider.CUSTOM || isValidDohUrl(url)) {
+            "Enter a valid HTTPS DoH URL"
         }
+        val savedUrl =
+            url.takeIf { it.isEmpty() || isValidDohUrl(it) }
+                ?: customDohUrl.takeIf { isValidDohUrl(it) }.orEmpty()
+        prefs
+            .edit()
+            .putString(KEY_DNS_PROVIDER, provider.name)
+            .putString(KEY_CUSTOM_DOH_URL, savedUrl)
+            .apply()
+    }
 
-    var bootstrapDnsProvider: BootstrapDnsProvider
-        get() = BootstrapDnsProvider.entries.firstOrNull {
-            it.name == prefs.getString(KEY_BOOTSTRAP_DNS_PROVIDER, null)
-        } ?: BootstrapDnsProvider.AUTOMATIC
-        set(value) { prefs.edit().putString(KEY_BOOTSTRAP_DNS_PROVIDER, value.name).apply() }
-
-    var customBootstrapIp: String
-        get() = prefs.getString(KEY_CUSTOM_BOOTSTRAP_IP, "") ?: ""
-        set(value) {
-            val trimmed = value.trim()
-            if (trimmed.isNotEmpty() && !isValidIpAddress(trimmed)) return
-            prefs.edit().putString(KEY_CUSTOM_BOOTSTRAP_IP, trimmed).apply()
-        }
-
-    val effectiveBootstrapAddresses: List<String>
-        get() = when (bootstrapDnsProvider) {
-            BootstrapDnsProvider.CUSTOM -> {
-                val ip = customBootstrapIp.trim()
-                if (isValidIpAddress(ip)) listOf(ip) else BootstrapDnsProvider.AUTOMATIC.addresses
+    val effectiveDohUrl: String
+        get() =
+            when (dnsProvider) {
+                DnsProvider.CUSTOM -> customDohUrl
+                DnsProvider.DIRECT_SYSTEM -> ""
+                else -> dnsProvider.dohUrl
             }
-            BootstrapDnsProvider.SYSTEM -> emptyList()
-            else -> bootstrapDnsProvider.addresses
+
+    var tlsFragmentMode: TlsFragmentMode
+        get() =
+            TlsFragmentMode.entries.firstOrNull {
+                it.name == prefs.getString(KEY_TLS_FRAGMENT_MODE, null)
+            } ?: TlsFragmentMode.OFF
+        set(value) {
+            prefs.edit().putString(KEY_TLS_FRAGMENT_MODE, value.name).apply()
+        }
+
+    var fragmentFallbackDelay: Int
+        get() = prefs.getInt(KEY_FRAGMENT_FALLBACK_DELAY, DEFAULT_FRAGMENT_FALLBACK_DELAY)
+        set(value) {
+            prefs.edit().putInt(KEY_FRAGMENT_FALLBACK_DELAY, value.coerceIn(50, 2000)).apply()
+        }
+
+    var utlsFingerprint: UtlsFingerprint
+        get() =
+            UtlsFingerprint.entries.firstOrNull {
+                it.name == prefs.getString(KEY_UTLS_FINGERPRINT, null)
+            } ?: UtlsFingerprint.FIREFOX
+        set(value) {
+            prefs.edit().putString(KEY_UTLS_FINGERPRINT, value.name).apply()
+        }
+
+    var tcpFastOpen: Boolean
+        get() = prefs.getBoolean(KEY_TCP_FAST_OPEN, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_TCP_FAST_OPEN, value).apply()
+        }
+
+    var maxConcurrentStreams: Int
+        get() = prefs.getInt(KEY_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_CONCURRENT_STREAMS)
+        set(value) {
+            prefs.edit().putInt(KEY_MAX_CONCURRENT_STREAMS, value.coerceIn(2, 128)).apply()
+        }
+
+    var ipv6Enabled: Boolean
+        get() = prefs.getBoolean(KEY_IPV6_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_IPV6_ENABLED, value).apply()
         }
 
     var proxyOnlyMode: Boolean
         get() = prefs.getBoolean(KEY_PROXY_ONLY_MODE, false)
-        set(value) { prefs.edit().putBoolean(KEY_PROXY_ONLY_MODE, value).apply() }
+        set(value) {
+            prefs.edit().putBoolean(KEY_PROXY_ONLY_MODE, value).apply()
+        }
 
     var customEdgeAddress: String
         get() = prefs.getString(KEY_CUSTOM_EDGE_ADDRESS, "") ?: ""
@@ -303,50 +295,231 @@ class SettingsStore(context: Context) {
     val effectiveCustomEdgeAddress: String?
         get() = customEdgeAddress.takeIf { isValidEdgeHost(it) }
 
-    var upstreamProxyEnabled: Boolean
+    val localProxyAuthEnabled: Boolean
+        get() = prefs.getBoolean("local_proxy_auth_enabled", false)
+
+    val localProxyUsername: String
+        get() = readCredential { credentialsPrefs.getString("local_proxy_username", "") ?: "" }
+
+    val localProxyPassword: String
+        get() = readCredential { credentialsPrefs.getString("local_proxy_password", "") ?: "" }
+
+    val upstreamProxyEnabled: Boolean
         get() = prefs.getBoolean(KEY_UPSTREAM_PROXY_ENABLED, false)
-        set(value) { prefs.edit().putBoolean(KEY_UPSTREAM_PROXY_ENABLED, value).apply() }
 
-    var upstreamProxyType: UpstreamProxyType
-        get() = UpstreamProxyType.entries.firstOrNull {
-            it.name == prefs.getString(KEY_UPSTREAM_PROXY_TYPE, null)
-        } ?: UpstreamProxyType.SOCKS5
-        set(value) { prefs.edit().putString(KEY_UPSTREAM_PROXY_TYPE, value.name).apply() }
+    val upstreamProxyType: UpstreamProxyType
+        get() =
+            UpstreamProxyType.entries.firstOrNull {
+                it.name ==
+                    readCredential {
+                        credentialsPrefs.getString(
+                            KEY_UPSTREAM_PROXY_TYPE,
+                            prefs.getString(KEY_UPSTREAM_PROXY_TYPE, null),
+                        )
+                    }
+            } ?: UpstreamProxyType.SOCKS5
 
-    var upstreamProxyHost: String
-        get() = prefs.getString(KEY_UPSTREAM_PROXY_HOST, "") ?: ""
-        set(value) { prefs.edit().putString(KEY_UPSTREAM_PROXY_HOST, value.trim()).apply() }
+    val upstreamProxyHost: String
+        get() = readCredential {
+            credentialsPrefs
+                .getString(KEY_UPSTREAM_PROXY_HOST, prefs.getString(KEY_UPSTREAM_PROXY_HOST, ""))
+                .orEmpty()
+                .trim()
+                .removeSurrounding("[", "]")
+        }
 
-    var upstreamProxyPort: Int
-        get() = prefs.getInt(KEY_UPSTREAM_PROXY_PORT, DEFAULT_UPSTREAM_PROXY_PORT)
-        set(value) { prefs.edit().putInt(KEY_UPSTREAM_PROXY_PORT, value.coerceIn(1, 65_535)).apply() }
+    fun saveLocalProxy(options: LocalProxyOptions) =
+        synchronized(proxySettingsLock) {
+            require(isValidLocalPort(options.port)) {
+                "Choose a valid listener port, excluding controller port $CONTROLLER_PORT"
+            }
+            require(
+                !options.authentication ||
+                    isValidLocalProxyCredentials(options.username, options.password)
+            ) {
+                "Enter valid credentials for both HTTP and SOCKS5"
+            }
+            require(
+                !upstreamProxyEnabled ||
+                    !isLocalProxyLoop(upstreamProxyHost, upstreamProxyPort, options.port)
+            ) {
+                "Upstream proxy must not point to this app's listeners"
+            }
+            readCredential {
+                credentialsPrefs
+                    .edit()
+                    .putString("local_proxy_username", options.username)
+                    .putString("local_proxy_password", options.password)
+                    .putLong(KEY_SOCKS_PORT, options.port.toLong())
+                    .commit()
+            }
+            check(
+                prefs
+                    .edit()
+                    .putInt(KEY_SOCKS_PORT, options.port)
+                    .putBoolean("local_proxy_auth_enabled", options.authentication)
+                    .commit()
+            ) {
+                "Could not persist local proxy settings"
+            }
+        }
 
-    var upstreamProxyUsername: String
-        get() = credentialsPrefs.getString(KEY_UPSTREAM_PROXY_USERNAME, "") ?: ""
-        set(value) { credentialsPrefs.edit().putString(KEY_UPSTREAM_PROXY_USERNAME, value).apply() }
+    val upstreamReviewRequired: Boolean
+        get() = readCredential {
+            credentialsPrefs.getLong(
+                "upstream_review_required",
+                if (prefs.getBoolean("upstream_proxy_tls", false)) 1 else 0,
+            ) == 1L
+        }
 
-    var upstreamProxyPassword: String
-        get() = credentialsPrefs.getString(KEY_UPSTREAM_PROXY_PASSWORD, "") ?: ""
-        set(value) { credentialsPrefs.edit().putString(KEY_UPSTREAM_PROXY_PASSWORD, value).apply() }
+    fun setUpstreamProxyEnabled(enabled: Boolean) =
+        synchronized(proxySettingsLock) {
+            check(prefs.edit().putBoolean(KEY_UPSTREAM_PROXY_ENABLED, enabled).commit()) {
+                "Could not persist the upstream proxy switch"
+            }
+        }
+
+    fun disableUpstreamProxy() = setUpstreamProxyEnabled(false)
+
+    fun saveUpstreamProxy(options: UpstreamProxyOptions) =
+        synchronized(proxySettingsLock) {
+            val host = options.host.trim().removeSurrounding("[", "]")
+            require((host.isEmpty() || isValidProxyHost(host)) && options.port in 1..65_535) {
+                "Enter a valid proxy host and port"
+            }
+            require(
+                !options.enabled ||
+                    isValidUpstreamProxyCredentials(
+                        options.type,
+                        options.username,
+                        options.password,
+                    )
+            ) {
+                "Credentials are not valid for the selected proxy type"
+            }
+            require(!options.enabled || !isLocalProxyLoop(host, options.port, socksPort)) {
+                "Upstream proxy must not point to this app's listeners"
+            }
+            readCredential {
+                credentialsPrefs
+                    .edit()
+                    .putString(KEY_UPSTREAM_PROXY_USERNAME, options.username)
+                    .putString(KEY_UPSTREAM_PROXY_PASSWORD, options.password)
+                    .putString(KEY_UPSTREAM_PROXY_TYPE, options.type.name)
+                    .putString(KEY_UPSTREAM_PROXY_HOST, host)
+                    .putLong(KEY_UPSTREAM_PROXY_PORT, options.port.toLong())
+                    .also { if (options.enabled) it.putLong("upstream_review_required", 0) }
+                    .commit()
+            }
+            setUpstreamProxyEnabled(options.enabled)
+        }
+
+    val upstreamProxyPort: Int
+        get() = readCredential {
+            credentialsPrefs
+                .getLong(
+                    KEY_UPSTREAM_PROXY_PORT,
+                    prefs.getInt(KEY_UPSTREAM_PROXY_PORT, DEFAULT_UPSTREAM_PROXY_PORT).toLong(),
+                )
+                .toInt()
+        }
+
+    val upstreamProxyUsername: String
+        get() = readCredential { credentialsPrefs.getString(KEY_UPSTREAM_PROXY_USERNAME, "") ?: "" }
+
+    val upstreamProxyPassword: String
+        get() = readCredential { credentialsPrefs.getString(KEY_UPSTREAM_PROXY_PASSWORD, "") ?: "" }
 
     var excludedApps: Set<String>
         get() = prefs.getStringSet(KEY_EXCLUDED_APPS, emptySet())?.toSet() ?: emptySet()
         set(value) {
-
             prefs.edit().putStringSet(KEY_EXCLUDED_APPS, HashSet(value)).apply()
         }
 
-    var tlsSplitMode: TlsSplitMode
-        get() = TlsSplitMode.parse(prefs.getString(KEY_TLS_SPLIT_MODE, null))
-        set(value) { prefs.edit().putString(KEY_TLS_SPLIT_MODE, value.name).apply() }
+    enum class SplitTunnelMode {
+        EXCLUDE,
+        INCLUDE,
+    }
+
+    var splitTunnelMode: SplitTunnelMode
+        get() =
+            SplitTunnelMode.entries.firstOrNull {
+                it.name == prefs.getString(KEY_SPLIT_TUNNEL_MODE, null)
+            } ?: SplitTunnelMode.EXCLUDE
+        set(value) {
+            prefs.edit().putString(KEY_SPLIT_TUNNEL_MODE, value.name).apply()
+        }
+
+    var includedApps: Set<String>
+        get() = prefs.getStringSet(KEY_INCLUDED_APPS, emptySet())?.toSet() ?: emptySet()
+        set(value) {
+            prefs.edit().putStringSet(KEY_INCLUDED_APPS, HashSet(value)).apply()
+        }
+
+    fun saveSplitTunneling(mode: SplitTunnelMode, excluded: Set<String>, included: Set<String>) {
+        require(mode != SplitTunnelMode.INCLUDE || included.isNotEmpty()) {
+            "Select at least one app to include"
+        }
+        prefs
+            .edit()
+            .putString(KEY_SPLIT_TUNNEL_MODE, mode.name)
+            .putStringSet(KEY_EXCLUDED_APPS, HashSet(excluded))
+            .putStringSet(KEY_INCLUDED_APPS, HashSet(included))
+            .apply()
+    }
+
+    enum class HttpVersion(val versionNumber: Int, val label: String, val description: String) {
+        HTTP_2(versionNumber = 2, label = "HTTP/2", description = "Multiplexed streams over TCP"),
+        HTTP_3(versionNumber = 3, label = "HTTP/3", description = "QUIC transport over UDP"),
+    }
+
+    var httpVersion: HttpVersion
+        get() =
+            HttpVersion.entries.firstOrNull { it.name == prefs.getString(KEY_HTTP_VERSION, null) }
+                ?: HttpVersion.HTTP_2
+        set(value) {
+            prefs.edit().putString(KEY_HTTP_VERSION, value.name).apply()
+        }
+
+    enum class UpstreamProxyType {
+        SOCKS5,
+        HTTP,
+    }
+
+    enum class TlsFragmentMode(val label: String, val description: String) {
+        OFF(label = "Disabled", description = "Standard TLS"),
+        RECORD(label = "Record", description = "TLS record layer"),
+        PACKET(label = "Packet", description = "TCP segment layer"),
+        COMBINED(label = "Combined", description = "Record and packet"),
+    }
+
+    enum class UtlsFingerprint(val label: String, val identifier: String) {
+        FIREFOX("Firefox", "firefox"),
+        CHROME("Chrome", "chrome"),
+        SAFARI("Safari", "safari"),
+        IOS("iOS", "ios"),
+        EDGE("Edge", "edge"),
+        RANDOMIZED("Randomized", "randomized"),
+    }
+
+    enum class DnsProvider(val label: String, val dohUrl: String) {
+        DIRECT_SYSTEM(label = "System DNS", dohUrl = ""),
+        GOOGLE(label = "Google", dohUrl = "https://8.8.8.8/dns-query"),
+        CLOUDFLARE(label = "Cloudflare", dohUrl = "https://1.1.1.1/dns-query"),
+        QUAD9(label = "Quad9", dohUrl = "https://9.9.9.9/dns-query"),
+        CUSTOM(label = "Custom DoH", dohUrl = "");
+
+        val isDirect: Boolean
+            get() = this == DIRECT_SYSTEM
+    }
 
     // ------------------------------------------------------------------
-    // Control-plane access fallbacks. These affect only the account/API
-    // requests (Firefox Accounts, Guardian, the server list) — never the
-    // VPN tunnel itself, and never the data-plane upstream proxy above
-    // (upstreamProxy*, which chains the tunnel through another proxy).
-    // All default off; with everything off the control plane behaves
-    // exactly as before.
+    // Fork block: control-plane access fallbacks. These affect only the
+    // account/API requests (Firefox Accounts, Guardian, the server
+    // list) — never the VPN tunnel itself, and never the data-plane
+    // upstream proxy above (upstreamProxy*, which chains the tunnel
+    // through another proxy). All default off; with everything off the
+    // control plane behaves exactly as upstream's.
     // ------------------------------------------------------------------
 
     /** SOCKS5 proxy for control-plane requests only (the account proxy). */
@@ -363,12 +536,16 @@ class SettingsStore(context: Context) {
         set(value) { prefs.edit().putInt(KEY_API_PROXY_PORT, value.coerceIn(1, 65_535)).apply() }
 
     var apiProxyUsername: String
-        get() = credentialsPrefs.getString(KEY_API_PROXY_USERNAME, "") ?: ""
-        set(value) { credentialsPrefs.edit().putString(KEY_API_PROXY_USERNAME, value.trim()).apply() }
+        get() = readCredential { credentialsPrefs.getString(KEY_API_PROXY_USERNAME, "") ?: "" }
+        set(value) {
+            credentialsPrefs.edit().putString(KEY_API_PROXY_USERNAME, value.trim()).commit()
+        }
 
     var apiProxyPassword: String
-        get() = credentialsPrefs.getString(KEY_API_PROXY_PASSWORD, "") ?: ""
-        set(value) { credentialsPrefs.edit().putString(KEY_API_PROXY_PASSWORD, value.trim()).apply() }
+        get() = readCredential { credentialsPrefs.getString(KEY_API_PROXY_PASSWORD, "") ?: "" }
+        set(value) {
+            credentialsPrefs.edit().putString(KEY_API_PROXY_PASSWORD, value.trim()).commit()
+        }
 
     /** The account proxy to use, or null when off or not validly configured. */
     val effectiveApiProxy: ApiProxySettings?
@@ -399,15 +576,16 @@ class SettingsStore(context: Context) {
         mutableListOf<android.content.SharedPreferences.OnSharedPreferenceChangeListener>()
 
     /**
-     * Invokes [listener] whenever a control-plane network setting (TLS
-     * split mode, account proxy, API relay) changes, so pooled
-     * connections and relay state built on the old values can be dropped.
+     * Invokes [listener] whenever a control-plane network setting kept in
+     * the plain prefs (account proxy switch/address, API relay) changes,
+     * so pooled connections and relay state built on the old values can
+     * be dropped. The proxy credentials live in the secure prefs, which
+     * expose no change listener; the credentials dialog calls
+     * ControlPlaneHttp.onSettingsChanged() itself after saving.
      */
     fun addControlPlaneSettingsListener(listener: () -> Unit) {
         val keys = setOf(
-            KEY_TLS_SPLIT_MODE,
             KEY_API_PROXY_ENABLED, KEY_API_PROXY_HOST, KEY_API_PROXY_PORT,
-            KEY_API_PROXY_USERNAME, KEY_API_PROXY_PASSWORD,
             KEY_API_RELAY_ENABLED, KEY_API_RELAY_URL,
         )
         val delegate =
@@ -416,7 +594,6 @@ class SettingsStore(context: Context) {
             }
         synchronized(controlPlaneListeners) { controlPlaneListeners += delegate }
         prefs.registerOnSharedPreferenceChangeListener(delegate)
-        credentialsPrefs.registerOnSharedPreferenceChangeListener(delegate)
     }
 
     data class ApiProxySettings(
@@ -426,165 +603,11 @@ class SettingsStore(context: Context) {
         val password: String,
     )
 
-    enum class TlsSplitMode(
-        val label: String,
-        val description: String,
-    ) {
-        OFF(
-            label = "Disabled",
-            description = "Standard TLS handshake without fragmentation",
-        ),
-        FIRST_BYTE(
-            label = "First byte",
-            description = "Splits TLS record header at byte 0 (0x16)",
-        ),
-        SNI(
-            label = "SNI hostname",
-            description = "Fragments the SNI extension across packets (defeats DPI)",
-        ),
-        ;
-
-        companion object {
-            /** Stored value → mode; anything unknown (or unset) is OFF. */
-            fun parse(raw: String?): TlsSplitMode =
-                entries.firstOrNull { it.name == raw } ?: OFF
-        }
-    }
-
-    enum class UpstreamProxyType { SOCKS5, HTTP }
-
-    enum class AppDesign(val label: String) {
-        PIXEL(label = "Pixel"),
-        PORTAL(label = "Portal"),
-        OLD(label = "Classic"),
-    }
-
-    enum class DnsProvider(
-        val label: String,
-        val dohUrl: String?,
-    ) {
-        SYSTEM_DEFAULT(
-            label = "Default",
-            dohUrl = null,
-        ),
-        CLOUDFLARE(
-            label = "Cloudflare",
-            dohUrl = "https://1.1.1.1/dns-query",
-        ),
-        GOOGLE(
-            label = "Google",
-            dohUrl = "https://8.8.8.8/dns-query",
-        ),
-        QUAD9(
-            label = "Quad9",
-            dohUrl = "https://9.9.9.9/dns-query",
-        ),
-        ADGUARD(
-            label = "AdGuard",
-            dohUrl = "https://dns.adguard-dns.com/dns-query",
-        ),
-        CUSTOM(
-            label = "Custom DoH",
-            dohUrl = null,
-        ),
-        ;
-    }
-
-    enum class BootstrapDnsProvider(
-        val label: String,
-        val description: String,
-        val addresses: List<String>,
-    ) {
-        AUTOMATIC(
-            label = "Automatic",
-            description = "Races all default DoH endpoints",
-            addresses = listOf("9.9.9.9", "1.1.1.1", "8.8.8.8"),
-        ),
-        QUAD9(
-            label = "Quad9",
-            description = "9.9.9.9, 149.112.112.112",
-            addresses = listOf("9.9.9.9", "149.112.112.112"),
-        ),
-        CLOUDFLARE(
-            label = "Cloudflare",
-            description = "1.1.1.1, 1.0.0.1",
-            addresses = listOf("1.1.1.1", "1.0.0.1"),
-        ),
-        GOOGLE(
-            label = "Google",
-            description = "8.8.8.8, 8.8.4.4",
-            addresses = listOf("8.8.8.8", "8.8.4.4"),
-        ),
-        SYSTEM(
-            label = "System DNS",
-            description = "Local network DNS",
-            addresses = emptyList(),
-        ),
-        CUSTOM(
-            label = "Custom IP",
-            description = "Specify a custom DoH IP resolver address",
-            addresses = emptyList(),
-        ),
-        ;
-    }
-
     companion object {
-        private const val KEY_THEME_MODE = "theme_mode"
-        private const val KEY_APP_DESIGN = "app_design"
-        private const val KEY_COLOR_STYLE = "color_style"
-        private const val KEY_DYNAMIC_COLOR = "dynamic_color"
-        private const val KEY_ACCENT_COLOR_INDEX = "accent_color_index"
-        private const val KEY_HAPTIC_FEEDBACK = "haptic_feedback"
-        private const val KEY_COLOR_CONTRAST = "color_contrast"
-        private const val KEY_REDUCE_MOTION = "reduce_motion"
-        private const val KEY_UI_FONT_SCALE = "ui_font_scale"
-        private const val KEY_APP_LANGUAGE = "app_language"
-        private const val KEY_SCREEN_TRANSITION = "screen_transition"
-        private const val KEY_NAV_BAR_STYLE = "nav_bar_style"
-        private const val KEY_CONNECT_BUTTON_STYLE = "connect_button_style"
-        private const val KEY_CARD_CORNER_STYLE = "card_corner_style"
-        private const val KEY_LIST_DENSITY = "list_density"
-        private const val KEY_THEME_PROFILE_ID = "theme_profile_id"
-        private const val KEY_CUSTOM_CONNECT_COLOR = "custom_connect_color"
-        private const val KEY_CUSTOM_CONNECTED_COLOR = "custom_connected_color"
-        private const val KEY_CUSTOM_SERVER_CARD_COLOR = "custom_server_card_color"
-        private const val KEY_CUSTOM_SERVER_ACTIVE_COLOR = "custom_server_active_color"
-        private const val KEY_CUSTOM_CONFIG_CARD_COLOR = "custom_config_card_color"
-        private const val KEY_CUSTOM_CONFIG_CARD_TEXT_COLOR = "custom_config_card_text_color"
-        private const val KEY_SHOW_SERVER_PING = "show_server_ping"
-        private const val KEY_SHOW_SERVER_USAGE = "show_server_usage"
-        private const val KEY_MONOSPACE_ADDRESS = "monospace_address"
-        private const val KEY_CONFIRM_REMOVE = "confirm_remove"
-        private const val KEY_HOME_AFTER_SELECT = "home_after_select"
-        private const val KEY_DOUBLE_COLUMN_DISPLAY = "double_column_display"
-        private const val KEY_EXIT_CHECK = "exit_check_enabled"
-        private const val KEY_CUSTOM_MTU = "custom_mtu"
-        private const val KEY_CACHED_REAL_IP = "cached_real_ip"
-        private const val KEY_CACHED_REAL_COUNTRY = "cached_real_country"
-        private const val KEY_CACHED_QUOTA_REMAINING = "cached_quota_remaining"
-        private const val KEY_CACHED_QUOTA_MAX = "cached_quota_max"
-        private const val KEY_CACHED_IS_UNLIMITED = "cached_is_unlimited"
-        const val DEFAULT_MTU = 1400
-        const val MIN_MTU = 576
-        const val MAX_MTU = 9000
-        private const val KEY_SOCKS_BIND_ADDRESS = "socks_bind_address"
-        private const val KEY_SOCKS_PORT = "socks_port"
-        private const val KEY_HTTP_PROXY_ENABLED = "http_proxy_enabled"
-        private const val KEY_HTTP_PROXY_PORT = "http_proxy_port"
-        private const val KEY_DNS_PROVIDER = "dns_provider"
-        private const val KEY_CUSTOM_DOH_URL = "custom_doh_url"
-        private const val KEY_BOOTSTRAP_DNS_PROVIDER = "bootstrap_dns_provider"
-        private const val KEY_CUSTOM_BOOTSTRAP_IP = "custom_bootstrap_ip"
-        private const val KEY_PROXY_ONLY_MODE = "proxy_only_mode"
-        private const val KEY_CUSTOM_EDGE_ADDRESS = "custom_edge_address"
-        private const val KEY_UPSTREAM_PROXY_ENABLED = "upstream_proxy_enabled"
-        private const val KEY_UPSTREAM_PROXY_TYPE = "upstream_proxy_type"
-        private const val KEY_UPSTREAM_PROXY_HOST = "upstream_proxy_host"
-        private const val KEY_UPSTREAM_PROXY_PORT = "upstream_proxy_port"
-        private const val KEY_UPSTREAM_PROXY_USERNAME = "upstream_proxy_username"
-        private const val KEY_UPSTREAM_PROXY_PASSWORD = "upstream_proxy_password"
-        private const val KEY_EXCLUDED_APPS = "excluded_apps"
-        private const val KEY_TLS_SPLIT_MODE = "tls_split_mode"
+        const val DEFAULT_LATENCY_PROBE_URL = "https://www.gstatic.com/generate_204"
+        private const val KEY_LATENCY_PROBE_URL = "latency_probe_url"
+
+        // Fork block keys (control-plane fallbacks; see the class body).
         private const val KEY_API_PROXY_ENABLED = "api_proxy_enabled"
         private const val KEY_API_PROXY_HOST = "api_proxy_host"
         private const val KEY_API_PROXY_PORT = "api_proxy_port"
@@ -593,65 +616,6 @@ class SettingsStore(context: Context) {
         private const val KEY_API_RELAY_ENABLED = "api_relay_enabled"
         private const val KEY_API_RELAY_URL = "api_relay_url"
         const val DEFAULT_API_PROXY_PORT = 1080
-        const val DEFAULT_SOCKS_BIND_ADDRESS = "127.0.0.1"
-        const val DEFAULT_SOCKS_PORT = 1080
-        const val DEFAULT_HTTP_PROXY_PORT = 8080
-        const val DEFAULT_UPSTREAM_PROXY_PORT = 1080
-
-        /** Sentinel for "no custom color chosen" in the personalize color settings. */
-        const val UNSET_COLOR: Long = Long.MIN_VALUE
-
-        val SOCKS_BIND_ADDRESS_PRESETS = listOf(
-            "127.0.0.1" to "Loopback only (127.0.0.1)",
-            "0.0.0.0" to "All interfaces (0.0.0.0)",
-        )
-
-        fun isValidDohUrl(value: String): Boolean {
-            val trimmed = value.trim()
-            if (!trimmed.startsWith("https://", ignoreCase = true)) return false
-            return runCatching {
-                val uri = java.net.URI.create(trimmed)
-                !uri.host.isNullOrBlank()
-            }.getOrDefault(false)
-        }
-
-        fun isValidIpAddress(value: String): Boolean {
-            return if (android.os.Build.VERSION.SDK_INT >= 29) {
-                android.net.InetAddresses.isNumericAddress(value)
-            } else {
-                @Suppress("DEPRECATION")
-                android.util.Patterns.IP_ADDRESS.matcher(value).matches()
-            }
-        }
-
-        fun isValidHostname(value: String): Boolean {
-            val host = value.trim().removeSuffix(".")
-            if (host.isEmpty() || host.length > 253) return false
-
-            if (host.contains(':')) return false
-            if (host.all { it.isDigit() || it == '.' }) return false
-            val labels = host.split('.')
-            if (labels.size < 2) return false
-            return labels.all { label ->
-                label.isNotEmpty() &&
-                    label.length <= 63 &&
-                    !label.startsWith('-') &&
-                    !label.endsWith('-') &&
-                    label.all { char ->
-                        char == '-' || (char.code < 128 && (char.isLetterOrDigit()))
-                    }
-            }
-        }
-
-        fun isValidEdgeHost(value: String): Boolean {
-            val host = value.trim().removeSuffix(".")
-            return isValidHostname(host) || isValidIpAddress(host)
-        }
-
-        // --------------------------------------------------------------
-        // Control-plane fallback validation (pure; no Android APIs, so
-        // these run in plain JVM unit tests).
-        // --------------------------------------------------------------
 
         /**
          * A proxy address as typed or pasted, without the spaces and the
@@ -663,20 +627,6 @@ class SettingsStore(context: Context) {
             val schemeEnd = address.indexOf("://")
             if (schemeEnd >= 0) address = address.substring(schemeEnd + 3)
             return address.trimEnd('/')
-        }
-
-        /**
-         * A host for the account proxy: a DNS name, "localhost", or an IP
-         * literal (IPv6 written without brackets). Deliberately a charset
-         * check only — a name that does not resolve fails later as an
-         * ordinary connection error, not here.
-         */
-        fun isValidProxyHost(host: String): Boolean {
-            if (host.isEmpty() || host.length > 253) return false
-            if (host.startsWith('.') || host.endsWith('.')) return false
-            return host.all { ch ->
-                ch.isLetterOrDigit() || ch == '-' || ch == '.' || ch == '_' || ch == ':'
-            }
         }
 
         fun isValidProxyPort(port: Int): Boolean = port in 1..65_535
@@ -713,5 +663,170 @@ class SettingsStore(context: Context) {
         }
 
         fun isValidRelayUrl(raw: String): Boolean = normalizeRelayUrl(raw) != null
+
+        fun isValidProbeUrl(value: String): Boolean =
+            runCatching {
+                    val uri = java.net.URI(value)
+                    uri.scheme.equals("https", ignoreCase = true) &&
+                        !uri.host.isNullOrBlank() &&
+                        uri.rawUserInfo == null &&
+                        uri.rawFragment == null &&
+                        (uri.port == -1 || uri.port in 1..65_535)
+                }
+                .getOrDefault(false)
+
+        private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_CUSTOM_MTU = "custom_mtu"
+        private const val KEY_CACHED_REAL_IP = "cached_real_ip"
+        private const val KEY_CACHED_REAL_COUNTRY = "cached_real_country"
+        private const val KEY_CACHED_QUOTA_REMAINING = "cached_quota_remaining"
+        private const val KEY_CACHED_QUOTA_MAX = "cached_quota_max"
+        private const val KEY_CACHED_IS_UNLIMITED = "cached_is_unlimited"
+        const val DEFAULT_MTU = 1280
+        const val MIN_MTU = 576
+        const val MAX_MTU = 9000
+        private const val KEY_SOCKS_PORT = "socks_port"
+        private const val KEY_DNS_PROVIDER = "dns_provider"
+        private const val KEY_CUSTOM_DOH_URL = "custom_doh_url"
+        private const val KEY_TLS_FRAGMENT_MODE = "tls_fragment_mode"
+        private const val KEY_FRAGMENT_FALLBACK_DELAY = "fragment_fallback_delay"
+        private const val KEY_UTLS_FINGERPRINT = "utls_fingerprint"
+        private const val KEY_TCP_FAST_OPEN = "tcp_fast_open"
+        private const val KEY_MAX_CONCURRENT_STREAMS = "max_concurrent_streams"
+        private const val KEY_IPV6_ENABLED = "ipv6_enabled"
+        const val DEFAULT_FRAGMENT_FALLBACK_DELAY = 300
+        const val DEFAULT_MAX_CONCURRENT_STREAMS = 32
+        private const val KEY_PROXY_ONLY_MODE = "proxy_only_mode"
+        private const val KEY_CUSTOM_EDGE_ADDRESS = "custom_edge_address"
+        private const val KEY_UPSTREAM_PROXY_ENABLED = "upstream_proxy_enabled"
+        private const val KEY_UPSTREAM_PROXY_TYPE = "upstream_proxy_type"
+        private const val KEY_UPSTREAM_PROXY_HOST = "upstream_proxy_host"
+        private const val KEY_UPSTREAM_PROXY_PORT = "upstream_proxy_port"
+        private const val KEY_UPSTREAM_PROXY_USERNAME = "upstream_proxy_username"
+        private const val KEY_UPSTREAM_PROXY_PASSWORD = "upstream_proxy_password"
+        private const val KEY_EXCLUDED_APPS = "excluded_apps"
+        private const val KEY_INCLUDED_APPS = "included_apps"
+        private const val KEY_SPLIT_TUNNEL_MODE = "split_tunnel_mode"
+        private const val KEY_HTTP_VERSION = "http_version"
+        const val CONTROLLER_PORT = 9090
+        const val DEFAULT_SOCKS_BIND_ADDRESS = "127.0.0.1"
+        const val DEFAULT_SOCKS_PORT = 1080
+        const val DEFAULT_UPSTREAM_PROXY_PORT = 1080
+
+        fun isValidUpstreamProxyCredentials(
+            type: UpstreamProxyType,
+            username: String,
+            password: String,
+        ): Boolean {
+            if (username.isEmpty() && password.isEmpty()) return true
+            if (
+                username.isBlank() ||
+                    username.any { it.isISOControl() } ||
+                    password.any { it.isISOControl() }
+            )
+                return false
+            return when (type) {
+                UpstreamProxyType.SOCKS5 ->
+                    username.toByteArray(Charsets.UTF_8).size in 1..255 &&
+                        password.toByteArray(Charsets.UTF_8).size in 1..255
+                UpstreamProxyType.HTTP ->
+                    ':' !in username &&
+                        username.toByteArray(Charsets.UTF_8).size <= 255 &&
+                        password.toByteArray(Charsets.UTF_8).size <= 255
+            }
+        }
+
+        fun isLocalProxyLoop(host: String, port: Int, mixedPort: Int): Boolean {
+            val normalized = host.trim().removeSurrounding("[", "]").removeSuffix(".").lowercase()
+            val loopback =
+                normalized == "localhost" ||
+                    normalized == "::1" ||
+                    normalized == "::ffff:127.0.0.1" ||
+                    (isValidIpAddress(normalized) &&
+                        runCatching { java.net.InetAddress.getByName(normalized).isLoopbackAddress }
+                            .getOrDefault(false))
+            return loopback && (port == mixedPort || port == CONTROLLER_PORT)
+        }
+
+        fun isValidLocalProxyCredentials(username: String, password: String): Boolean =
+            username.isNotBlank() &&
+                password.isNotBlank() &&
+                ':' !in username &&
+                username.none { it.isISOControl() } &&
+                password.none { it.isISOControl() } &&
+                username.toByteArray(Charsets.UTF_8).size in 1..255 &&
+                password.toByteArray(Charsets.UTF_8).size in 1..255
+
+        fun isValidDohUrl(value: String): Boolean {
+            val trimmed = value.trim()
+            if (!trimmed.startsWith("https://", ignoreCase = true)) return false
+            return runCatching {
+                    val uri = java.net.URI.create(trimmed)
+                    !uri.host.isNullOrBlank() &&
+                        uri.rawUserInfo == null &&
+                        uri.rawFragment == null &&
+                        uri.rawQuery == null &&
+                        (uri.port == -1 || uri.port in 1..65_535)
+                }
+                .getOrDefault(false)
+        }
+
+        fun isValidIpAddress(value: String): Boolean {
+            if (value.isEmpty()) return false
+            if (':' !in value) {
+                val octets = value.split('.')
+                return octets.size == 4 &&
+                    octets.all { octet ->
+                        octet.isNotEmpty() &&
+                            octet.length <= 3 &&
+                            octet.all { it in '0'..'9' } &&
+                            (octet.length == 1 || octet.first() != '0') &&
+                            octet.toInt() in 0..255
+                    }
+            }
+            if (value.any { it !in "0123456789abcdefABCDEF:." }) return false
+            return runCatching {
+                    java.net.URI("http://[$value]/").host != null &&
+                        java.net.InetAddress.getByName(value) != null
+                }
+                .getOrDefault(false)
+        }
+
+        fun isValidHostname(value: String): Boolean {
+            val host = value.trim().removeSuffix(".")
+            if (host.isEmpty() || host.length > 253) return false
+
+            if (host.contains(':')) return false
+            if (host.all { it.isDigit() || it == '.' }) return false
+            val labels = host.split('.')
+            if (labels.size < 2) return false
+            return labels.all { label ->
+                label.isNotEmpty() &&
+                    label.length <= 63 &&
+                    !label.startsWith('-') &&
+                    !label.endsWith('-') &&
+                    label.all { char ->
+                        char == '-' || (char.code < 128 && (char.isLetterOrDigit()))
+                    }
+            }
+        }
+
+        fun isValidProxyHost(value: String): Boolean {
+            val host = value.trim().removeSurrounding("[", "]").removeSuffix(".")
+            if (isValidIpAddress(host) || isValidHostname(host)) return true
+
+            return host.length in 1..63 &&
+                host.any { it.isLetter() } &&
+                !host.startsWith('-') &&
+                !host.endsWith('-') &&
+                host.all { it == '-' || it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }
+        }
+
+        fun isValidLocalPort(port: Int): Boolean = port in 1..65_535 && port != CONTROLLER_PORT
+
+        fun isValidEdgeHost(value: String): Boolean {
+            val host = value.trim().removeSuffix(".")
+            return isValidHostname(host) || isValidIpAddress(host)
+        }
     }
 }
