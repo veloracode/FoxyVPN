@@ -8,16 +8,19 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
-import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 
 /**
- * TLS ClientHello fragmentation: the pure splitter's segment layout, and a
- * socket-level check that SplitClientHelloSocket puts the hello on the
- * wire in more than one write when a mode is on, and untouched when off.
+ * TLS ClientHello fragmentation: the pure splitter's segment layout, the
+ * splitting stream's write segmentation (deterministic — counting TCP
+ * arrivals instead proved flaky under load, because a loopback receiver
+ * may coalesce two flushed writes into one read even though they left as
+ * separate writes), and one real-socket pass proving the bytes cross a
+ * socket losslessly.
  */
 class TlsSplitSocketTest {
 
@@ -47,6 +50,26 @@ class TlsSplitSocketTest {
         return b
     }
 
+    /** An OutputStream that records every individual write call. */
+    private class RecordingOutputStream : OutputStream() {
+        val writes = mutableListOf<ByteArray>()
+        override fun write(b: Int) {
+            writes += byteArrayOf(b.toByte())
+        }
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            writes += b.copyOfRange(off, off + len)
+        }
+        fun concatenated(): ByteArray = writes.reduce { acc, w -> acc + w }
+    }
+
+    private fun splitWrites(mode: SettingsStore.TlsSplitMode, bytes: ByteArray): List<ByteArray> {
+        val recording = RecordingOutputStream()
+        val stream = SplitClientHelloOutputStream(recording, { mode })
+        stream.write(bytes)
+        stream.flush()
+        return recording.writes
+    }
+
     @Test
     fun splitter_sniOffsetAndSegments() {
         val hello = clientHello("api.accounts.firefox.com")
@@ -74,74 +97,78 @@ class TlsSplitSocketTest {
     }
 
     @Test
-    fun socket_offMode_helloLeavesInOneWrite() {
-        repeat(3) {
-            val arrivals = runSocketScenario(SettingsStore.TlsSplitMode.OFF)
-            assertEquals("OFF must not split (arrivals: ${arrivals.size})", 1, arrivals.size)
-        }
-    }
-
-    @Test
-    fun socket_firstByteMode_helloLeavesInMultipleWrites() {
-        repeat(3) {
-            val arrivals = runSocketScenario(SettingsStore.TlsSplitMode.FIRST_BYTE)
-            assertTrue("FIRST_BYTE must split (arrivals: ${arrivals.size})", arrivals.size >= 2)
-            assertEquals(1, arrivals.first().size)
-        }
-    }
-
-    @Test
-    fun socket_sniMode_helloLeavesInMultipleWrites() {
-        repeat(3) {
-            val arrivals = runSocketScenario(SettingsStore.TlsSplitMode.SNI)
-            assertTrue("SNI must split (arrivals: ${arrivals.size})", arrivals.size >= 2)
-        }
-    }
-
-    /**
-     * Sends one ClientHello through a SplitClientHelloSocket to a loopback
-     * listener and returns the byte chunks as they arrived. The reader is
-     * parked in read() before the client writes, and the splitter flushes
-     * each segment with TCP_NODELAY, so segment boundaries are arrival
-     * boundaries on loopback.
-     */
-    private fun runSocketScenario(mode: SettingsStore.TlsSplitMode): List<ByteArray> {
+    fun stream_offMode_helloLeavesInOneWrite() {
         val hello = clientHello("api.accounts.firefox.com")
-        val arrivals = CopyOnWriteArrayList<ByteArray>()
+        val writes = splitWrites(SettingsStore.TlsSplitMode.OFF, hello)
+        assertEquals(1, writes.size)
+        assertArrayEquals(hello, writes[0])
+    }
+
+    @Test
+    fun stream_firstByteMode_helloLeavesInTwoWrites() {
+        val hello = clientHello("api.accounts.firefox.com")
+        val writes = splitWrites(SettingsStore.TlsSplitMode.FIRST_BYTE, hello)
+        assertEquals(2, writes.size)
+        assertEquals(1, writes[0].size)
+        assertArrayEquals(hello, writes.reduce { acc, w -> acc + w })
+    }
+
+    @Test
+    fun stream_sniMode_helloLeavesInThreeWrites() {
+        val hello = clientHello("api.accounts.firefox.com")
+        val writes = splitWrites(SettingsStore.TlsSplitMode.SNI, hello)
+        assertEquals(3, writes.size)
+        assertEquals(61, writes[0].size)
+        assertEquals(1, writes[1].size)
+        assertArrayEquals(hello, writes.reduce { acc, w -> acc + w })
+    }
+
+    @Test
+    fun stream_splitsOnlyTheFirstHello() {
+        val hello = clientHello("api.accounts.firefox.com")
+        val recording = RecordingOutputStream()
+        val stream = SplitClientHelloOutputStream(recording, { SettingsStore.TlsSplitMode.FIRST_BYTE })
+        stream.write(hello)
+        stream.write(hello)
+        stream.flush()
+        // First hello: two writes. Second hello on the same stream: whole.
+        assertEquals(3, recording.writes.size)
+        assertEquals(hello.size, recording.writes[2].size)
+        assertArrayEquals(hello + hello, recording.concatenated())
+    }
+
+    @Test
+    fun stream_nonHelloBytesPassThroughUntouched() {
+        val data = "GET / HTTP/1.1\r\n\r\n".toByteArray(Charsets.US_ASCII)
+        val writes = splitWrites(SettingsStore.TlsSplitMode.SNI, data)
+        assertEquals(1, writes.size)
+        assertArrayEquals(data, writes[0])
+    }
+
+    @Test
+    fun socket_sniMode_helloCrossesLosslessly() {
+        val hello = clientHello("api.accounts.firefox.com")
         val received = ByteArrayOutputStream()
         val listener = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
-        val readerReady = java.util.concurrent.CountDownLatch(1)
         val reader = thread(isDaemon = true) {
             listener.accept().use { socket ->
-                socket.soTimeout = 3_000
                 val input = socket.getInputStream()
                 val buffer = ByteArray(8192)
-                readerReady.countDown()
                 while (true) {
-                    val n = try {
-                        input.read(buffer)
-                    } catch (e: Exception) {
-                        break
-                    }
+                    val n = input.read(buffer)
                     if (n == -1) break
-                    val chunk = buffer.copyOf(n)
-                    arrivals += chunk
-                    synchronized(received) { received.write(chunk) }
+                    synchronized(received) { received.write(buffer, 0, n) }
                 }
             }
         }
-        val socket = SplitClientHelloSocket { mode }
+        val socket = SplitClientHelloSocket { SettingsStore.TlsSplitMode.SNI }
         socket.connect(InetSocketAddress("127.0.0.1", listener.localPort), 2_000)
-        readerReady.await(2, java.util.concurrent.TimeUnit.SECONDS)
-        Thread.sleep(150) // let the reader park inside read()
         val out = socket.getOutputStream()
         out.write(hello)
         out.flush()
-        Thread.sleep(400)
         socket.close()
         reader.join(4_000)
         listener.close()
         assertArrayEquals(hello, synchronized(received) { received.toByteArray() })
-        return arrivals
     }
 }

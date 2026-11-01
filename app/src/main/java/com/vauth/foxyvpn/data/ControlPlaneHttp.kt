@@ -88,52 +88,64 @@ class SimpleCookieJar : CookieJar {
     fun snapshotAll(): List<Cookie> = byDomain.values.flatten()
 }
 
+// Internal (not private) so unit tests can drive the stream directly;
+// visibility only — no behavior depends on it.
+internal class SplitClientHelloOutputStream(
+    out: OutputStream,
+    private val modeProvider: () -> SettingsStore.TlsSplitMode,
+    private val onSplit: () -> Unit = {},
+) : FilterOutputStream(out) {
+    private var splitDone = false
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        val mode = modeProvider()
+        if (splitDone || mode == SettingsStore.TlsSplitMode.OFF) {
+            out.write(b, off, len)
+            return
+        }
+
+        if (!TlsClientHelloSplitter.looksLikeClientHello(b, off, len)) {
+            out.write(b, off, len)
+            return
+        }
+
+        splitDone = true
+        val segments = try {
+            TlsClientHelloSplitter.splitBytes(b, off, len, mode)
+        } catch (e: Throwable) {
+            null
+        }
+
+        if (segments.isNullOrEmpty()) {
+            out.write(b, off, len)
+            return
+        }
+
+        onSplit()
+        for (seg in segments) {
+            out.write(seg)
+            out.flush()
+        }
+    }
+
+    override fun write(b: ByteArray) {
+        write(b, 0, b.size)
+    }
+}
+
 // Internal (not private) so unit tests can drive the socket directly;
 // visibility only — no behavior depends on it.
 internal class SplitClientHelloSocket(
     private val modeProvider: () -> SettingsStore.TlsSplitMode,
 ) : Socket() {
-    private var splitDone = false
+    // One wrapper per socket, as the split state must be shared by every
+    // getOutputStream() call (previously the state lived on the socket).
+    private var stream: OutputStream? = null
 
-    override fun getOutputStream(): OutputStream {
-        val realOut = super.getOutputStream()
-        return object : FilterOutputStream(realOut) {
-            override fun write(b: ByteArray, off: Int, len: Int) {
-                val mode = modeProvider()
-                if (splitDone || mode == SettingsStore.TlsSplitMode.OFF) {
-                    realOut.write(b, off, len)
-                    return
-                }
-
-                if (!TlsClientHelloSplitter.looksLikeClientHello(b, off, len)) {
-                    realOut.write(b, off, len)
-                    return
-                }
-
-                splitDone = true
-                val segments = try {
-                    TlsClientHelloSplitter.splitBytes(b, off, len, mode)
-                } catch (e: Throwable) {
-                    null
-                }
-
-                if (segments.isNullOrEmpty()) {
-                    realOut.write(b, off, len)
-                    return
-                }
-
-                runCatching { this@SplitClientHelloSocket.tcpNoDelay = true }
-                for (seg in segments) {
-                    realOut.write(seg)
-                    realOut.flush()
-                }
-            }
-
-            override fun write(b: ByteArray) {
-                write(b, 0, b.size)
-            }
-        }
-    }
+    override fun getOutputStream(): OutputStream =
+        stream ?: SplitClientHelloOutputStream(super.getOutputStream(), modeProvider) {
+            runCatching { tcpNoDelay = true }
+        }.also { stream = it }
 }
 
 private class ProtectingSocketFactory : SocketFactory() {
