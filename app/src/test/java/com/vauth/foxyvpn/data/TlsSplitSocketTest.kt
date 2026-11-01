@@ -50,18 +50,6 @@ class TlsSplitSocketTest {
         return b
     }
 
-    /** An OutputStream that records every individual write call. */
-    private class RecordingOutputStream : OutputStream() {
-        val writes = mutableListOf<ByteArray>()
-        override fun write(b: Int) {
-            writes += byteArrayOf(b.toByte())
-        }
-        override fun write(b: ByteArray, off: Int, len: Int) {
-            writes += b.copyOfRange(off, off + len)
-        }
-        fun concatenated(): ByteArray = writes.reduce { acc, w -> acc + w }
-    }
-
     private fun splitWrites(mode: SettingsStore.TlsSplitMode, bytes: ByteArray): List<ByteArray> {
         val recording = RecordingOutputStream()
         val stream = SplitClientHelloOutputStream(recording, { mode })
@@ -161,7 +149,7 @@ class TlsSplitSocketTest {
                 }
             }
         }
-        val socket = SplitClientHelloSocket { SettingsStore.TlsSplitMode.SNI }
+        val socket = SplitClientHelloSocket(modeProvider = { SettingsStore.TlsSplitMode.SNI })
         socket.connect(InetSocketAddress("127.0.0.1", listener.localPort), 2_000)
         val out = socket.getOutputStream()
         out.write(hello)
@@ -171,4 +159,17 @@ class TlsSplitSocketTest {
         listener.close()
         assertArrayEquals(hello, synchronized(received) { received.toByteArray() })
     }
+}
+
+/** An OutputStream that records every individual write call. */
+internal class RecordingOutputStream : OutputStream() {
+    val writes = mutableListOf<ByteArray>()
+    override fun write(b: Int) {
+        writes += byteArrayOf(b.toByte())
+    }
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        writes += b.copyOfRange(off, off + len)
+    }
+    fun concatenated(): ByteArray =
+        if (writes.isEmpty()) ByteArray(0) else writes.reduce { acc, w -> acc + w }
 }

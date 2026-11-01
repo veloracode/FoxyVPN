@@ -1,6 +1,7 @@
 package com.vauth.foxyvpn.data
 
 import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Connection
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -15,31 +16,35 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.BufferedSink
+import okio.Timeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
 /**
- * RelayFallbackInterceptor driven through a scripted [Interceptor.Chain]:
- * each proceed() consumes the next scripted outcome, so every branch —
- * fallback triggers, relay refusal, the relay-first window, replay safety —
- * is exercised deterministically, without sockets. The same flows over a
- * real OkHttp transport are covered by RelayEndToEndTest.
+ * RelayFallbackInterceptor driven through a scripted [Interceptor.Chain]
+ * (the direct attempt) plus a scripted [Call.Factory] (the relay hop on
+ * its sibling client): one shared outcome queue, consumed in call order,
+ * so every branch — fallback triggers, relay refusal, per-host relay-first
+ * stickiness, replay safety, cookie copying — is exercised
+ * deterministically, without sockets. The same flows over a real OkHttp
+ * transport are covered by RelayEndToEndTest.
  */
 class RelayFallbackInterceptorTest {
 
     private val fxaUrl = "https://api.accounts.firefox.com/v1/oauth/token"
     private val guardianUrl = "https://vpn.mozilla.org/api/v2/vpn/login"
 
-    /** Shared script across calls: outcomes in order, every request seen. */
     private class Script {
         val outcomes = ArrayDeque<(Request) -> Response>()
         val requests = mutableListOf<Request>()
         val connectTimeoutsMs = mutableListOf<Int>()
+        val readTimeoutsMs = mutableListOf<Int>()
 
         fun respond(code: Int, body: String = "", headers: Headers = Headers.Builder().build()) {
             outcomes.addLast { request -> response(request, code, body, headers) }
@@ -48,35 +53,69 @@ class RelayFallbackInterceptorTest {
         fun fail(error: IOException) {
             outcomes.addLast { throw error }
         }
+
+        fun next(request: Request): Response {
+            val outcome = outcomes.removeFirstOrNull()
+                ?: throw AssertionError("call made with no scripted outcome left")
+            return outcome(request)
+        }
+    }
+
+    private class FakeCall(
+        private val callRequest: Request,
+        private val executor: (Request) -> Response = {
+            throw UnsupportedOperationException("execute() not expected")
+        },
+    ) : Call {
+        override fun request(): Request = callRequest
+        override fun execute(): Response = executor(callRequest)
+        override fun enqueue(responseCallback: Callback) =
+            throw UnsupportedOperationException("enqueue() not expected")
+
+        override fun cancel() = Unit
+        override fun isExecuted(): Boolean = true
+        override fun isCanceled(): Boolean = false
+        override fun timeout(): Timeout = Timeout.NONE
+        override fun clone(): Call = this
+    }
+
+    private class FakeRelayFactory(private val script: Script) : Call.Factory {
+        override fun newCall(request: Request): Call {
+            script.requests += request
+            return FakeCall(request) { script.next(it) }
+        }
     }
 
     private class FakeChain(
         private val script: Script,
         private val initialRequest: Request,
         private val connectTimeoutMs: Int = 30_000,
+        private val readTimeoutMs: Int = 30_000,
     ) : Interceptor.Chain {
+        val call: Call = FakeCall(initialRequest)
+
         override fun request(): Request = initialRequest
 
         override fun proceed(request: Request): Response {
             script.requests += request
             script.connectTimeoutsMs += connectTimeoutMs
-            val outcome = script.outcomes.removeFirstOrNull()
-                ?: throw AssertionError("proceed() called with no scripted outcome left")
-            return outcome(request)
+            script.readTimeoutsMs += readTimeoutMs
+            return script.next(request)
         }
 
         override fun connection(): Connection? = null
 
-        override fun call(): Call = throw UnsupportedOperationException("not used by the interceptor")
+        override fun call(): Call = call
 
         override fun connectTimeoutMillis(): Int = connectTimeoutMs
 
         override fun withConnectTimeout(timeout: Int, unit: TimeUnit): Interceptor.Chain =
-            FakeChain(script, initialRequest, unit.toMillis(timeout.toLong()).toInt())
+            FakeChain(script, initialRequest, unit.toMillis(timeout.toLong()).toInt(), readTimeoutMs)
 
-        override fun readTimeoutMillis(): Int = 30_000
+        override fun readTimeoutMillis(): Int = readTimeoutMs
 
-        override fun withReadTimeout(timeout: Int, unit: TimeUnit): Interceptor.Chain = this
+        override fun withReadTimeout(timeout: Int, unit: TimeUnit): Interceptor.Chain =
+            FakeChain(script, initialRequest, connectTimeoutMs, unit.toMillis(timeout.toLong()).toInt())
 
         override fun writeTimeoutMillis(): Int = 30_000
 
@@ -84,11 +123,21 @@ class RelayFallbackInterceptorTest {
     }
 
     private var relayBase: HttpUrl? = "https://relay.example.com/r?key=secret".toHttpUrl()
-    private val interceptor = RelayFallbackInterceptor(relayProvider = { relayBase })
     private val script = Script()
+    private val jar = SimpleCookieJar()
+    private val sentCalls = mutableSetOf<Call>()
+    private val interceptor = RelayFallbackInterceptor(
+        relayProvider = { relayBase },
+        cookieJarProvider = { jar },
+        relayClientProvider = { FakeRelayFactory(script) },
+        requestSent = { call -> call in sentCalls },
+    )
 
-    private fun execute(request: Request): Response =
-        interceptor.intercept(FakeChain(script, request))
+    private fun execute(request: Request, markSent: Boolean = false): Response {
+        val chain = FakeChain(script, request)
+        if (markSent) sentCalls += chain.call
+        return interceptor.intercept(chain)
+    }
 
     private fun get(url: String): Pair<Int, String> =
         execute(Request.Builder().url(url).get().build()).use { resp ->
@@ -175,18 +224,20 @@ class RelayFallbackInterceptorTest {
         assertEquals("POST", relayed.method)
         assertEquals("""{"code":"xyz"}""", relayed.bodyString())
         assertEquals("Bearer abc", relayed.header("Authorization"))
-        // The direct attempt ran with the short connect timeout; the relay
-        // attempt kept the chain's normal one.
+        // The direct attempt ran with the short timeouts.
         assertEquals(
             RelayFallbackInterceptor.DIRECT_CONNECT_TIMEOUT_SECONDS * 1000,
             script.connectTimeoutsMs[0],
         )
-        assertEquals(30_000, script.connectTimeoutsMs[1])
+        assertEquals(
+            RelayFallbackInterceptor.DIRECT_READ_TIMEOUT_SECONDS * 1000,
+            script.readTimeoutsMs[0],
+        )
     }
 
     @Test
-    fun direct406FromFxaHost_fallsBackToRelay() {
-        script.respond(406, "blocked")
+    fun directEmpty406FromFxaHost_fallsBackToRelay() {
+        script.respond(406, "")
         script.respond(200, "relay")
         val (code, body) = get(fxaUrl)
         assertEquals(200, code)
@@ -196,11 +247,21 @@ class RelayFallbackInterceptorTest {
     }
 
     @Test
+    fun direct406WithJsonBody_isAnApplicationAnswer_notRelayed() {
+        // FxA's own errors are JSON; only the edge's EMPTY 406 is a block.
+        script.respond(406, """{"errno":101,"error":"bad request"}""")
+        val (code, body) = get(fxaUrl)
+        assertEquals(406, code)
+        assertEquals("""{"errno":101,"error":"bad request"}""", body)
+        assertEquals(1, script.requests.size)
+    }
+
+    @Test
     fun direct406FromNonFxaHost_isNotRelayed() {
-        script.respond(406, "blocked")
+        script.respond(406, "")
         val (code, body) = get(guardianUrl)
         assertEquals(406, code)
-        assertEquals("blocked", body)
+        assertEquals("", body)
         assertEquals(1, script.requests.size)
     }
 
@@ -214,27 +275,49 @@ class RelayFallbackInterceptorTest {
         assertEquals(2, script.requests.size)
     }
 
+    @Test
+    fun connectTimeout_fallsBackToRelay() {
+        script.fail(SocketTimeoutException("connect timed out"))
+        script.respond(200, "relay")
+        val (code, body) = get(fxaUrl)
+        assertEquals(200, code)
+        assertEquals("relay", body)
+        assertEquals(2, script.requests.size)
+    }
+
+    @Test
+    fun readTimeoutAfterRequestSent_isNeverRelayed() {
+        script.fail(SocketTimeoutException("Read timed out"))
+        try {
+            execute(Request.Builder().url(fxaUrl).get().build(), markSent = true)
+            fail("expected the timeout to propagate")
+        } catch (e: SocketTimeoutException) {
+            assertEquals("Read timed out", e.message)
+        }
+        assertEquals(1, script.requests.size)
+    }
+
     // ------------------------------------------------------------------
     // Relay failure surfaces the original result
     // ------------------------------------------------------------------
 
     @Test
-    fun relayRefusal_surfacesOriginalResponseWithBody() {
-        script.respond(406, """{"error":"fastly"}""")
+    fun relayRefusal_surfacesOriginal406() {
+        script.respond(406, "")
         script.respond(200, "", Headers.Builder().set("X-Relay-Error", "nope").build())
         val (code, body) = get(fxaUrl)
         assertEquals(406, code)
-        assertEquals("""{"error":"fastly"}""", body)
+        assertEquals("", body)
         assertEquals(2, script.requests.size)
     }
 
     @Test
-    fun relayFailureAfter406_surfacesOriginalResponse() {
-        script.respond(406, "blocked-body")
+    fun relayFailureAfter406_surfacesOriginal406() {
+        script.respond(406, "")
         script.fail(ConnectException("relay unreachable"))
         val (code, body) = get(fxaUrl)
         assertEquals(406, code)
-        assertEquals("blocked-body", body)
+        assertEquals("", body)
     }
 
     @Test
@@ -252,7 +335,7 @@ class RelayFallbackInterceptorTest {
 
     @Test
     fun relayAnswer_isFinal_exactlyOneRelayAttempt() {
-        script.respond(406, "blocked")
+        script.respond(406, "")
         script.respond(500, "relay-error")
         val (code, body) = get(fxaUrl)
         assertEquals(500, code)
@@ -261,12 +344,12 @@ class RelayFallbackInterceptorTest {
     }
 
     // ------------------------------------------------------------------
-    // Relay-first window
+    // Relay-first stickiness (per host)
     // ------------------------------------------------------------------
 
     @Test
-    fun afterFallback_nextRequestsGoThroughRelayFirst() {
-        script.respond(406, "blocked")
+    fun afterFallback_nextRequestsToSameHostGoThroughRelayFirst() {
+        script.respond(406, "")
         script.respond(200, "relay")
         script.respond(200, "relay")
         assertEquals(200, get(fxaUrl).first)
@@ -278,18 +361,41 @@ class RelayFallbackInterceptorTest {
     }
 
     @Test
-    fun relayFirstWindow_clearsWhenRelayFailsAndDirectAnswers() {
-        script.respond(406, "blocked")
+    fun stickinessIsPerHost_otherHostsStillGoDirect() {
+        script.respond(406, "")
+        script.respond(200, "relay")
+        assertEquals(200, get(fxaUrl).first) // FxA host becomes sticky
+        script.respond(200, "direct")
+        val (code, body) = get(guardianUrl) // Guardian must NOT go relay-first
+        assertEquals(200, code)
+        assertEquals("direct", body)
+        assertEquals(3, script.requests.size)
+        assertEquals("vpn.mozilla.org", script.requests[2].url.host)
+    }
+
+    @Test
+    fun clearStickiness_returnsToDirectFirst() {
+        script.respond(406, "")
         script.respond(200, "relay")
         assertEquals(200, get(fxaUrl).first)
-        // Relay now refuses, direct now answers: relay-first fails over to
-        // direct and the window closes.
+        interceptor.clearStickiness()
+        script.respond(200, "direct")
+        val (code, body) = get(fxaUrl)
+        assertEquals(200, code)
+        assertEquals("direct", body)
+        assertEquals("api.accounts.firefox.com", script.requests[2].url.host)
+    }
+
+    @Test
+    fun relayFirst_clearsWhenRelayFailsAndDirectAnswers() {
+        script.respond(406, "")
+        script.respond(200, "relay")
+        assertEquals(200, get(fxaUrl).first)
         script.respond(200, "", Headers.Builder().set("X-Relay-Error", "down").build())
         script.respond(200, "direct")
         val second = get(fxaUrl)
         assertEquals(200, second.first)
         assertEquals("direct", second.second)
-        // Third request goes directly again.
         script.respond(200, "direct")
         assertEquals(200, get(fxaUrl).first)
         val hosts = script.requests.map { it.url.host }
@@ -304,12 +410,33 @@ class RelayFallbackInterceptorTest {
     }
 
     // ------------------------------------------------------------------
+    // Cookies cross the relay against the original URL
+    // ------------------------------------------------------------------
+
+    @Test
+    fun cookies_areCopiedToTheRelayRequestAndBack() {
+        jar.set("sess", "abc", "api.accounts.firefox.com")
+        script.respond(406, "")
+        script.respond(
+            200,
+            "relay",
+            Headers.Builder().set("Set-Cookie", "uid=xyz; Path=/").build(),
+        )
+        val (code, _) = get(fxaUrl)
+        assertEquals(200, code)
+        assertEquals(2, script.requests.size)
+        assertEquals("sess=abc", script.requests[1].header("Cookie"))
+        val stored = jar.loadForRequest(fxaUrl.toHttpUrl())
+        assertTrue(stored.any { it.name == "uid" && it.value == "xyz" })
+    }
+
+    // ------------------------------------------------------------------
     // Replay safety
     // ------------------------------------------------------------------
 
     @Test
     fun oneShotBody_isNeverRelayed() {
-        script.respond(406, "blocked")
+        script.fail(ConnectException("connection refused"))
         val oneShot = object : RequestBody() {
             override fun contentType() = "application/json".toMediaType()
             override fun isOneShot() = true
@@ -318,7 +445,12 @@ class RelayFallbackInterceptorTest {
             }
         }
         val request = Request.Builder().url(fxaUrl).post(oneShot).build()
-        execute(request).use { resp -> assertEquals(406, resp.code) }
+        try {
+            execute(request)
+            fail("expected the direct failure to propagate")
+        } catch (e: ConnectException) {
+            assertEquals("connection refused", e.message)
+        }
         assertEquals(1, script.requests.size)
     }
 

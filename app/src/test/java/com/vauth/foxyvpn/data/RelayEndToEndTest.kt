@@ -1,5 +1,6 @@
 package com.vauth.foxyvpn.data
 
+import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -24,10 +25,11 @@ import java.util.concurrent.atomic.AtomicReference
  * End-to-end: RelayFallbackInterceptor against local fake servers: the "Mozilla" side
  * is a plain-HTTP loopback server reached through a Dns override under the
  * real FxA/Guardian host names (the interceptor keys its 406 rule off the
- * host), the relay is a second loopback server. The interceptor logic is
- * also covered without sockets by RelayFallbackInterceptorTest; this class
- * adds the real OkHttp transport on top. Needs ordinary loopback
- * networking (CI); some sandboxes block JVM loopback entirely.
+ * host), the relay is a second loopback server reached through the sibling
+ * client. The interceptor logic is also covered without sockets by
+ * RelayFallbackInterceptorTest; this class adds the real OkHttp transport
+ * on top. Needs ordinary loopback networking (CI); some sandboxes block
+ * JVM loopback entirely.
  */
 class RelayEndToEndTest {
 
@@ -44,7 +46,21 @@ class RelayEndToEndTest {
 
     private var relayBase: HttpUrl? = null
 
-    private fun interceptor() = RelayFallbackInterceptor(relayProvider = { relayBase })
+    private fun siblingClient(): OkHttpClient =
+        OkHttpClient.Builder()
+            .dns(loopbackDns)
+            .cookieJar(CookieJar.NO_COOKIES)
+            .followRedirects(false)
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .build()
+
+    private fun interceptor() = RelayFallbackInterceptor(
+        relayProvider = { relayBase },
+        cookieJarProvider = { SimpleCookieJar() },
+        relayClientProvider = { siblingClient() },
+    )
 
     private fun client(interceptor: RelayFallbackInterceptor): OkHttpClient =
         OkHttpClient.Builder()
@@ -128,8 +144,8 @@ class RelayEndToEndTest {
     }
 
     @Test
-    fun direct406FromFxaHost_fallsBackToRelay() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, "blocked") }.use { direct ->
+    fun directEmpty406FromFxaHost_fallsBackToRelay() {
+        FakeHttpServer { FakeHttpServer.FakeResponse(406, "") }.use { direct ->
             FakeHttpServer { FakeHttpServer.FakeResponse(200, "relay") }.use { relay ->
                 relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
                 val client = client(interceptor())
@@ -143,14 +159,14 @@ class RelayEndToEndTest {
     }
 
     @Test
-    fun direct406FromNonFxaHost_isNotRelayed() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, "blocked") }.use { direct ->
+    fun direct406WithBody_isNotRelayed() {
+        FakeHttpServer { FakeHttpServer.FakeResponse(406, """{"errno":101}""") }.use { direct ->
             FakeHttpServer { FakeHttpServer.FakeResponse(200, "relay") }.use { relay ->
                 relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
                 val client = client(interceptor())
-                val (code, body) = get(client, "http://$guardianHost:${direct.port}/api/v2/vpn/login")
+                val (code, body) = get(client, "http://$fxaHost:${direct.port}/v1/oauth/token")
                 assertEquals(406, code)
-                assertEquals("blocked", body)
+                assertEquals("""{"errno":101}""", body)
                 assertEquals(0, relay.requests.size)
             }
         }
@@ -175,8 +191,8 @@ class RelayEndToEndTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun relayRefusal_surfacesOriginalResponseWithBody() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, """{"error":"fastly"}""") }.use { direct ->
+    fun relayRefusal_surfacesOriginal406() {
+        FakeHttpServer { FakeHttpServer.FakeResponse(406, "") }.use { direct ->
             FakeHttpServer {
                 FakeHttpServer.FakeResponse(200, "", mapOf("X-Relay-Error" to "nope"))
             }.use { relay ->
@@ -184,20 +200,20 @@ class RelayEndToEndTest {
                 val client = client(interceptor())
                 val (code, body) = get(client, "http://$fxaHost:${direct.port}/v1/oauth/token")
                 assertEquals(406, code)
-                assertEquals("""{"error":"fastly"}""", body)
+                assertEquals("", body)
                 assertEquals(1, relay.requests.size)
             }
         }
     }
 
     @Test
-    fun relayUnreachable_surfacesOriginalResponse() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, "blocked-body") }.use { direct ->
+    fun relayUnreachable_surfacesOriginal406() {
+        FakeHttpServer { FakeHttpServer.FakeResponse(406, "") }.use { direct ->
             relayBase = "http://127.0.0.1:${closedPort()}/relay".toHttpUrl()
             val client = client(interceptor())
             val (code, body) = get(client, "http://$fxaHost:${direct.port}/v1/oauth/token")
             assertEquals(406, code)
-            assertEquals("blocked-body", body)
+            assertEquals("", body)
         }
     }
 
@@ -215,7 +231,7 @@ class RelayEndToEndTest {
 
     @Test
     fun relayAnswer_isFinal_exactlyOneRelayAttempt() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, "blocked") }.use { direct ->
+        FakeHttpServer { FakeHttpServer.FakeResponse(406, "") }.use { direct ->
             FakeHttpServer { FakeHttpServer.FakeResponse(500, "relay-error") }.use { relay ->
                 relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
                 val client = client(interceptor())
@@ -229,12 +245,12 @@ class RelayEndToEndTest {
     }
 
     // ------------------------------------------------------------------
-    // Relay-first window
+    // Relay-first stickiness
     // ------------------------------------------------------------------
 
     @Test
     fun afterFallback_nextRequestsGoThroughRelayFirst() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, "blocked") }.use { direct ->
+        FakeHttpServer { FakeHttpServer.FakeResponse(406, "") }.use { direct ->
             FakeHttpServer { FakeHttpServer.FakeResponse(200, "relay") }.use { relay ->
                 relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
                 val client = client(interceptor())
@@ -251,17 +267,15 @@ class RelayEndToEndTest {
     }
 
     @Test
-    fun relayFirstWindow_clearsWhenRelayFailsAndDirectAnswers() {
-        val directResponse = AtomicReference(FakeHttpServer.FakeResponse(406, "blocked"))
+    fun relayFirst_clearsWhenRelayFailsAndDirectAnswers() {
+        val directResponse = AtomicReference(FakeHttpServer.FakeResponse(406, ""))
         val relayResponse = AtomicReference(FakeHttpServer.FakeResponse(200, "relay"))
         FakeHttpServer { directResponse.get() }.use { direct ->
             FakeHttpServer { relayResponse.get() }.use { relay ->
                 relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
                 val client = client(interceptor())
                 val url = "http://$fxaHost:${direct.port}/v1/oauth/token"
-                assertEquals(200, get(client, url).first) // fallback; window opens
-                // Relay now refuses; direct now answers: relay-first attempt
-                // fails, direct answers, window closes.
+                assertEquals(200, get(client, url).first) // fallback; host becomes sticky
                 relayResponse.set(FakeHttpServer.FakeResponse(200, "", mapOf("X-Relay-Error" to "down")))
                 directResponse.set(FakeHttpServer.FakeResponse(200, "direct"))
                 val second = get(client, url)
@@ -281,26 +295,27 @@ class RelayEndToEndTest {
 
     @Test
     fun oneShotBody_isNeverRelayed() {
-        FakeHttpServer { FakeHttpServer.FakeResponse(406, "blocked") }.use { direct ->
-            FakeHttpServer { FakeHttpServer.FakeResponse(200, "relay") }.use { relay ->
-                relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
-                val client = client(interceptor())
-                val oneShot = object : RequestBody() {
-                    override fun contentType() = "application/json".toMediaType()
-                    override fun isOneShot() = true
-                    override fun writeTo(sink: BufferedSink) {
-                        sink.writeUtf8("{}")
-                    }
+        FakeHttpServer { FakeHttpServer.FakeResponse(200, "relay") }.use { relay ->
+            relayBase = "http://127.0.0.1:${relay.port}/relay".toHttpUrl()
+            val client = client(interceptor())
+            val oneShot = object : RequestBody() {
+                override fun contentType() = "application/json".toMediaType()
+                override fun isOneShot() = true
+                override fun writeTo(sink: BufferedSink) {
+                    sink.writeUtf8("{}")
                 }
-                val request = Request.Builder()
-                    .url("http://$fxaHost:${direct.port}/v1/oauth/token")
-                    .post(oneShot)
-                    .build()
-                client.newCall(request).execute().use { resp ->
-                    assertEquals(406, resp.code)
-                }
-                assertEquals(0, relay.requests.size)
             }
+            val request = Request.Builder()
+                .url("http://$fxaHost:${closedPort()}/v1/oauth/token")
+                .post(oneShot)
+                .build()
+            try {
+                client.newCall(request).execute()
+                fail("expected the direct failure to propagate")
+            } catch (e: ConnectException) {
+                // The one-shot guard returns the direct attempt untouched.
+            }
+            assertEquals(0, relay.requests.size)
         }
     }
 

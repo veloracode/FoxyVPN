@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.net.Proxy
 import java.net.URI
@@ -96,25 +97,70 @@ class ControlPlaneSettingsValidationTest {
         assertTrue(SettingsStore.isValidRelayUrl("https://relay.example.com/"))
     }
 
-    // Proxy selector ----------------------------------------------------
+    // Control-plane DNS (placeholder while the account proxy is on) ------
 
     @Test
-    fun proxySelector_returnsSocksProxyWhenConfigured() {
-        val settings = SettingsStore.ApiProxySettings("proxy.example.com", 1080, "", "")
-        val selector = ControlPlaneProxySelector { settings }
-        val proxies = selector.select(URI("https://api.accounts.firefox.com/v1/test"))
-        assertEquals(1, proxies.size)
-        assertEquals(Proxy.Type.SOCKS, proxies[0].type())
-        val address = proxies[0].address() as java.net.InetSocketAddress
-        assertEquals("proxy.example.com", address.hostString)
-        assertEquals(1080, address.port)
+    fun controlPlaneDns_returnsHostnameCarryingPlaceholderWhenProxyOn() {
+        val settings = SettingsStore.ApiProxySettings("127.0.0.1", 1080, "", "")
+        val dns = ControlPlaneDns { settings }
+        val addresses = dns.lookup("api.accounts.firefox.com")
+        assertEquals(1, addresses.size)
+        assertEquals("api.accounts.firefox.com", addresses[0].hostName)
+        assertEquals("0.0.0.0", addresses[0].hostAddress)
     }
 
     @Test
-    fun proxySelector_delegatesToPlatformDefaultWhenOff() {
-        val selector = ControlPlaneProxySelector { null }
-        val uri = URI("https://api.accounts.firefox.com/v1/test")
-        val expected = java.net.ProxySelector.getDefault()?.select(uri) ?: listOf(Proxy.NO_PROXY)
-        assertEquals(expected, selector.select(uri))
+    fun controlPlaneDns_usesSystemResolverWhenProxyOff() {
+        val dns = ControlPlaneDns { null }
+        val addresses = dns.lookup("localhost")
+        assertTrue(addresses.isNotEmpty())
+        assertTrue(addresses.any { it.isLoopbackAddress })
+    }
+
+    // Proxy host resolution (never system DNS) ---------------------------
+
+    @Test
+    fun proxyHostResolver_acceptsLiteralsAndLocalhost() {
+        assertEquals(
+            "127.0.0.1",
+            ProxyHostResolver.literalOrLocalhost("127.0.0.1")?.hostAddress,
+        )
+        assertEquals(
+            "192.168.1.10",
+            ProxyHostResolver.literalOrLocalhost("192.168.1.10")?.hostAddress,
+        )
+        assertEquals(
+            "127.0.0.1",
+            ProxyHostResolver.literalOrLocalhost("localhost")?.hostAddress,
+        )
+        assertNull(ProxyHostResolver.literalOrLocalhost("256.1.1.1"))
+        assertNull(ProxyHostResolver.literalOrLocalhost("proxy.example.com"))
+        assertNull(ProxyHostResolver.literalOrLocalhost("1.2.3"))
+    }
+
+    @Test
+    fun proxyHostResolver_resolvesNamesOnlyThroughTheInjectedDoh() {
+        val original = ProxyHostResolver.dohLookup
+        try {
+            ProxyHostResolver.dohLookup = { host ->
+                if (host == "proxy.example.com") {
+                    ProxyHostResolver.literalOrLocalhost("203.0.113.7")
+                } else {
+                    null
+                }
+            }
+            assertEquals(
+                "203.0.113.7",
+                ProxyHostResolver.resolve("proxy.example.com").hostAddress,
+            )
+            try {
+                ProxyHostResolver.resolve("missing.example.com")
+                fail("expected UnknownHostException")
+            } catch (expected: java.net.UnknownHostException) {
+            }
+        } finally {
+            ProxyHostResolver.dohLookup = original
+            ProxyHostResolver.clearCache()
+        }
     }
 }
