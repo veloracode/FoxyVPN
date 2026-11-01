@@ -179,6 +179,22 @@ class FxaAuthRepository(
         Unit
     }
 
+    data class BatchParsedItem(
+        val raw: String,
+        val email: String,
+        val password: String? = null,
+        val accessToken: String? = null,
+        val refreshToken: String? = null,
+    )
+
+    /**
+     * Accepts a JSON array of {"email", "password"? , "accessToken"/"access_token"?,
+     * "refreshToken"/"refresh_token"?} objects, one JSON object per line, or
+     * line-based entries separated by "----", ":", "|", ",", ";" or whitespace
+     * ("email:password", "email----password", ...). The password keeps the
+     * rest of the line, so it may itself contain ":" or ",".
+     */
+
     companion object {
         fun normalizeEmail(email: String): String =
             email.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").trim().lowercase()
@@ -186,21 +202,6 @@ class FxaAuthRepository(
         fun sanitizeCode(code: String): String =
             code.replace(Regex("[\\p{Z}\\u200B-\\u200D\\uFEFF\\u00A0\\s]+"), "").trim()
 
-        data class BatchParsedItem(
-            val raw: String,
-            val email: String,
-            val password: String? = null,
-            val accessToken: String? = null,
-            val refreshToken: String? = null,
-        )
-
-        /**
-         * Accepts a JSON array of {"email", "password"? , "accessToken"/"access_token"?,
-         * "refreshToken"/"refresh_token"?} objects, one JSON object per line, or
-         * line-based entries separated by "----", ":", "|", ",", ";" or whitespace
-         * ("email:password", "email----password", ...). The password keeps the
-         * rest of the line, so it may itself contain ":" or ",".
-         */
         fun parseBatchInput(rawText: String): List<BatchParsedItem> {
             val items = mutableListOf<BatchParsedItem>()
             val trimmed = rawText.trim()
