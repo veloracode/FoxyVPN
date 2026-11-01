@@ -33,7 +33,11 @@ class AccountRepository(
     fun migrateAndReconcile() {
         runCatching { accountStore.migrateLegacyAccountsIfNeeded() }
             .onFailure { AppLogger.w(TAG, "legacy account migration failed", it) }
-        reconcile()
+        // Startup reconciliation must never take the app down: a storage
+        // failure here degrades to "accounts list not aligned", which the
+        // capture hook and the next start repair.
+        runCatching { reconcile() }
+            .onFailure { AppLogger.w(TAG, "account reconciliation failed", it) }
     }
 
     /** Aligns the account list with the current TokenStore session. */
