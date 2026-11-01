@@ -25,6 +25,23 @@ fun Request.Builder.applyMozillaVpnHeaders(): Request.Builder {
     return this
 }
 
+const val FIREFOX_ANDROID_USER_AGENT =
+    "Mozilla/5.0 (Android 14; Mobile; rv:133.0) Gecko/133.0 Firefox/133.0"
+
+/**
+ * Headers for Firefox Accounts calls. The FxA edge's bot protection
+ * rejects the MozillaVPN client User-Agent with an empty 406 (verified
+ * live: the same /oauth/token request returns 400 with a Firefox
+ * User-Agent), which forced every FxA call into the JS challenge solver.
+ * Guardian and the server list keep the VPN-client identity above; only
+ * FxA calls present as Firefox.
+ */
+fun Request.Builder.applyFxaHeaders(): Request.Builder {
+    header("User-Agent", FIREFOX_ANDROID_USER_AGENT)
+    header("Accept", "application/json")
+    return this
+}
+
 class SimpleCookieJar : CookieJar {
     private val byDomain = ConcurrentHashMap<String, MutableList<Cookie>>()
 

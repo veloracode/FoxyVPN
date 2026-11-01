@@ -78,7 +78,37 @@ class FxaAuthRepository(
             error("The sign-in page did not hand over a usable session token")
         }
         completeLogin("", clean)
+        // completeLogin with a blank email only fills the legacy session
+        // slot. The browser flow has no email at hand, so resolve it from
+        // the FxA profile (the granted OAuth scope includes "profile")
+        // and register the account in the multi-account list like every
+        // other sign-in. Best effort: a failed profile lookup must not
+        // fail the sign-in itself.
+        val savedAuth = tokenStore.loadAuth()
+        val profileEmail = savedAuth?.let { auth ->
+            runCatching { fetchProfileEmail(auth.accessToken) }.getOrNull()
+        }
+        if (savedAuth != null && !profileEmail.isNullOrBlank()) {
+            tokenStore.addAccount(VpnAccount(email = profileEmail, auth = savedAuth))
+        }
     }
+
+    /** The signed-in account's email from the OAuth profile endpoint, or null. */
+    private suspend fun fetchProfileEmail(accessToken: String): String? =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url("$FXA_OAUTH_SERVER/profile")
+                .applyFxaHeaders()
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            ControlPlaneHttp.client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val text = resp.body?.string().orEmpty()
+                if (text.isEmpty()) null
+                else JSONObject(text).optString("email").ifBlank { null }
+            }
+        }
 
     // ------------------------------------------------------------------
     // Pending sign-in (email verification code). FxA returns new-device
@@ -619,7 +649,7 @@ class FxaAuthRepository(
         }
 
         fun buildRequest(): Request {
-            val builder = Request.Builder().url(url).applyMozillaVpnHeaders()
+            val builder = Request.Builder().url(url).applyFxaHeaders()
                 .header("Content-Type", "application/json")
             if (sessionToken != null) {
                 builder.header("Authorization", hawkHeader(method, url, tokenId!!, hmacKey!!, bodyBytes))
