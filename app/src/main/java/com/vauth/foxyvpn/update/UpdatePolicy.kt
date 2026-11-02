@@ -57,7 +57,16 @@ private fun releaseTagComparison(tag: String, currentVersionName: String): Int? 
     fun parts(value: String): List<Long>? {
         val segments = value.removePrefix("v").split('.')
         if (
-            segments.size !in 2..4 ||
+            // Fork deviation (v1 reset, 2026-11-02): single-segment
+            // tags are accepted — the reset release is tagged "v1"
+            // for versionName "1.0", and upstream's 2..4-segment rule
+            // left such tags unparsable, which made the updater offer
+            // the v1 release to v1 installs themselves (the offer then
+            // failed the versionCode identity check at install time).
+            // "v1" now compares as 1.0: not newer than 1.0, newer than
+            // 0.x, older than 1.1.x (whose installs take the release
+            // page; Android ordering is carried by versionCode).
+            segments.size !in 1..4 ||
                 segments.any { it.isEmpty() || it.any { c -> c !in '0'..'9' } }
         )
             return null
