@@ -1108,3 +1108,133 @@ private fun SettingsSwitchRow(
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
+
+
+// Design picker cards, shared with the interface section
+// (definitions restored verbatim from the fork's settings code).
+@Composable
+fun DesignOptionCard(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    preview: @Composable () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = if (selected) cs.primaryContainer else cs.surfaceContainerHigh,
+        border = if (selected) BorderStroke(2.dp, cs.primary) else null,
+        modifier = modifier,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(vertical = 10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 72.dp, height = 88.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(cs.surface),
+                contentAlignment = Alignment.Center,
+            ) {
+                preview()
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (selected) cs.onPrimaryContainer else cs.onSurface,
+            )
+        }
+    }
+}
+
+@Composable
+fun DesignPreview(design: SettingsStore.AppDesign) {
+    val cs = MaterialTheme.colorScheme
+    when (design) {
+        SettingsStore.AppDesign.PIXEL -> {
+            // Mini hero card with central dot.
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(6.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 52.dp, height = 30.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(cs.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clip(CircleShape)
+                            .background(cs.primary),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(width = 52.dp, height = 8.dp)
+                        .clip(CircleShape)
+                        .background(cs.surfaceContainerHighest),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(width = 40.dp, height = 8.dp)
+                        .clip(CircleShape)
+                        .background(cs.surfaceContainerHighest),
+                )
+            }
+        }
+        SettingsStore.AppDesign.PORTAL -> {
+            // Mini portal: concentric rings.
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(6.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(cs.primary.copy(alpha = 0.18f)),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(cs.primary.copy(alpha = 0.30f)),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(cs.primary),
+                )
+            }
+        }
+        SettingsStore.AppDesign.OLD -> {
+            // Mini classic list.
+            Column(
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+                modifier = Modifier.padding(8.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(cs.primary)
+                        .align(Alignment.CenterHorizontally),
+                )
+                repeat(3) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 52.dp, height = 8.dp)
+                            .clip(CircleShape)
+                            .background(cs.surfaceContainerHighest),
+                    )
+                }
+            }
+        }
+    }
+}

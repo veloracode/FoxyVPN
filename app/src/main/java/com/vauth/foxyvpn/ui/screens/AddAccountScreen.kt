@@ -78,6 +78,14 @@ fun AddAccountScreen(
         )
     val uiState by model.uiState.collectAsStateWithLifecycle()
 
+    // Resolved here, in composition: s() reads a CompositionLocal and
+    // cannot be called from the finish coroutine below.
+    val msgRestored = s("Could not add the account — your previous account was restored.")
+    val msgFailed = s("Could not add the account.")
+    val msgAlready = s("That account is already here — its session was refreshed.")
+    val msgAddedPrefix = s("Account added: ")
+    val msgNowActiveSuffix = s(" (now active)")
+
     // Preparation: snapshot the live session into the active entry (so
     // it holds the exact current credentials), stop the tunnel (it is
     // about to change identity), then wipe the FxA web session.
@@ -109,18 +117,14 @@ fun AddAccountScreen(
                         withContext(Dispatchers.IO) { accountRepository.installStoredSession(it) }
                     } ?: false
                     onFinished(
-                        if (restored) {
-                            s("Could not add the account — your previous account was restored.")
-                        } else {
-                            s("Could not add the account.")
-                        }
+                        if (restored) msgRestored else msgFailed
                     )
                 }
                 previousActiveId == null || captured.id == previousActiveId -> {
                     // Signed in with the account that was already
                     // active: its entry was refreshed in place (dedupe),
                     // nothing to restore.
-                    onFinished(s("That account is already here — its session was refreshed."))
+                    onFinished(msgAlready)
                 }
                 else -> {
                     // Capture set the NEW account active; switch back so
@@ -131,8 +135,8 @@ fun AddAccountScreen(
                         accountRepository.switchTo(previousActiveId)
                     }
                     onFinished(
-                        if (back) s("Account added: ${captured.email}")
-                        else s("Account added: ${captured.email} (now active)")
+                        if (back) msgAddedPrefix + captured.email
+                        else msgAddedPrefix + captured.email + msgNowActiveSuffix
                     )
                 }
             }
