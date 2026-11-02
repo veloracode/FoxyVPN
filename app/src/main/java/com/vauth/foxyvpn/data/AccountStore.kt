@@ -307,7 +307,7 @@ class AccountStore(context: Context) {
             .remove(LEGACY_KEY_PENDING_EMAIL)
             .remove(LEGACY_KEY_PENDING_SESSION_TOKEN)
             .remove(LEGACY_KEY_PENDING_KIND)
-            .apply()
+            .commit()
     }
 
     companion object {
