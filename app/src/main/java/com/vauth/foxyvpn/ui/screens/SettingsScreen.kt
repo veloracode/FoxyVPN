@@ -51,8 +51,11 @@ import com.vauth.foxyvpn.data.ProxySettingsRepository
 import com.vauth.foxyvpn.data.SettingsStore
 import com.vauth.foxyvpn.ui.settings.AntiBlockSettingsSection
 import com.vauth.foxyvpn.ui.settings.ForkAccountsRow
+import com.vauth.foxyvpn.ui.screens.InterfaceSettingsSection
+import com.vauth.foxyvpn.ui.theme.AppearanceController
 import com.vauth.foxyvpn.ui.ProxyEditor
 import com.vauth.foxyvpn.ui.ProxySettingsViewModel
+import com.vauth.foxyvpn.ui.l10n.s
 import com.vauth.foxyvpn.ui.settings.ConcurrencyPickerDialog
 import com.vauth.foxyvpn.ui.settings.CustomEdgeAddressDialog
 import com.vauth.foxyvpn.ui.settings.DnsProviderPickerDialog
@@ -93,9 +96,13 @@ fun SettingsScreen(
     onAutomaticUpdatesChange: ((Boolean) -> Unit)? = null,
     // Fork additions: account controls hide when signed out (the screen
     // is also reachable pre-login, via the login screen's gear), and the
-    // accounts entry is shown only when a navigate target exists.
+    // accounts entry is shown only when a navigate target exists. The
+    // section order is the v1 fork's: Connection, Interface, DNS, Local
+    // proxy, Split tunneling, Advanced, "When Mozilla can't be reached",
+    // About, Account — upstream v2's rows live inside those sections.
     hasSession: Boolean = true,
     onOpenAccounts: (() -> Unit)? = null,
+    appearance: AppearanceController,
 ) {
     val context = LocalContext.current
     var automaticRecovery by remember { mutableStateOf(settingsStore.automaticRecovery) }
@@ -287,6 +294,15 @@ fun SettingsScreen(
                 modifier = Modifier.clickable { activeDialog = SettingsDialog.MTU },
             )
 
+            // Fork addition: the Interface (appearance) section, as in
+            // the v1 fork — directly under Connection. The v1 fork's
+            // sections were inset cards; the wrapper keeps that inset
+            // inside this screen's label/divider layout.
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                InterfaceSettingsSection(appearance = appearance)
+            }
+
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionLabel(stringResource(R.string.settings_section_dns))
             ListItem(
@@ -307,7 +323,7 @@ fun SettingsScreen(
             )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionLabel(stringResource(R.string.proxy))
+            SectionLabel(stringResource(R.string.local_proxy))
             SettingsToggle(
                 title = stringResource(R.string.settings_proxy_only_mode),
                 summary = stringResource(R.string.settings_proxy_only_help),
@@ -562,13 +578,9 @@ fun SettingsScreen(
                     automaticRecovery = it
                 },
             )
-            // Fork additions: the accounts entry (signed-in only) and the
-            // "When Mozilla can't be reached" fallbacks. This block sits
-            // below Advanced and above About, as in the v1 fork.
+            // Fork addition: the "When Mozilla can't be reached"
+            // fallbacks — below Advanced, above About, as in the v1 fork.
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            if (hasSession && onOpenAccounts != null) {
-                ForkAccountsRow(onOpenAccounts = onOpenAccounts)
-            }
             AntiBlockSettingsSection(settingsStore = settingsStore)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionLabel(stringResource(R.string.settings_section_about))
@@ -623,8 +635,16 @@ fun SettingsScreen(
                     },
             )
 
+            // Fork addition: the Account section, as in the v1 fork —
+            // the accounts entry and sign-out live at the bottom, and
+            // only when a session exists (this screen is also reachable
+            // pre-login via the gear).
             if (hasSession) {
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SectionLabel(s("Account"))
+            if (onOpenAccounts != null) {
+                ForkAccountsRow(onOpenAccounts = onOpenAccounts)
+            }
             Button(
                 onClick = onSignOut,
                 enabled = !signOutInProgress,

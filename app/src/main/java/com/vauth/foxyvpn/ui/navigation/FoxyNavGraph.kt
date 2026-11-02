@@ -17,13 +17,14 @@ import com.vauth.foxyvpn.AppContainer
 import com.vauth.foxyvpn.ui.HomeViewModel
 import com.vauth.foxyvpn.ui.ServerListViewModel
 import com.vauth.foxyvpn.ui.screens.AccountScreen
+import com.vauth.foxyvpn.ui.screens.AddAccountScreen
 import com.vauth.foxyvpn.ui.screens.HomeScreen
 import com.vauth.foxyvpn.ui.screens.LoginScreen
 import com.vauth.foxyvpn.ui.screens.LogsScreen
 import com.vauth.foxyvpn.ui.screens.ServerListScreen
 import com.vauth.foxyvpn.ui.screens.SettingsScreen
 import com.vauth.foxyvpn.ui.screens.SplashScreen
-import com.vauth.foxyvpn.ui.theme.ThemeController
+import com.vauth.foxyvpn.ui.theme.AppearanceController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,15 +36,16 @@ object FoxyRoutes {
     const val SERVERS = "servers"
     const val SETTINGS = "settings"
     const val LOGS = "logs"
-    // Fork addition.
+    // Fork additions.
     const val ACCOUNTS = "accounts"
+    const val ADD_ACCOUNT = "add_account"
 }
 
 @Composable
 fun FoxyNavGraph(
     navController: NavHostController = rememberNavController(),
     container: AppContainer,
-    themeController: ThemeController,
+    appearance: AppearanceController,
     onRequestConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -94,8 +96,6 @@ fun FoxyNavGraph(
                     }
                 },
                 onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
-                accountRepository = container.accountRepository,
-                accountStore = container.accountStore,
             )
         }
         composable(FoxyRoutes.HOME) {
@@ -110,13 +110,14 @@ fun FoxyNavGraph(
                         )
                 )
             HomeScreen(
-                proxyStateStore = container.proxyStateStore,
+                container = container,
+                appearance = appearance,
                 homeModel = homeModel,
-                themeController = themeController,
                 onRequestConnect = onRequestConnect,
                 onDisconnect = onDisconnect,
                 onOpenServers = { navController.navigate(FoxyRoutes.SERVERS) },
                 onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
+                onOpenAccounts = { navController.navigate(FoxyRoutes.ACCOUNTS) },
             )
         }
         composable(FoxyRoutes.SERVERS) {
@@ -141,6 +142,7 @@ fun FoxyNavGraph(
             var autoUpdates by remember { mutableStateOf(updater?.automaticChecks ?: false) }
             SettingsScreen(
                 settingsStore = container.settingsStore,
+                appearance = appearance,
                 hasSession = container.tokenStore.loadAuth() != null,
                 onOpenAccounts = { navController.navigate(FoxyRoutes.ACCOUNTS) },
                 onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
@@ -259,7 +261,22 @@ fun FoxyNavGraph(
                         }
                     }
                 },
+                onAddAccount = { navController.navigate(FoxyRoutes.ADD_ACCOUNT) },
                 onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.ADD_ACCOUNT) {
+            AddAccountScreen(
+                authRepository = container.authRepository,
+                accountRepository = container.accountRepository,
+                accountStore = container.accountStore,
+                onDisconnect = onDisconnect,
+                onFinished = { message ->
+                    navController.popBackStack()
+                    android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG)
+                        .show()
+                },
+                onCanceled = { navController.popBackStack() },
             )
         }
         composable(FoxyRoutes.LOGS) { LogsScreen(onBack = { navController.popBackStack() }) }

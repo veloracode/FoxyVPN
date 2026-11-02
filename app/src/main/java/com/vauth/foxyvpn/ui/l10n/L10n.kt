@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
+import com.vauth.foxyvpn.ui.theme.AppLanguage
 
 /**
  * Maintainable UI localization. English is the source of truth; Persian
@@ -229,14 +230,19 @@ enum class ResolvedLang { English, Persian }
 val LocalL10n = compositionLocalOf { ResolvedLang.English }
 
 @Composable
-fun rememberResolvedLang(): ResolvedLang {
-    // Fork adaptation for the v2 tree: upstream v2 has no in-app language
-    // setting (the v1 fork's AppLanguage lived in its dropped theme
-    // layer), so the language resolves from the system locale only.
+fun rememberResolvedLang(appLanguage: AppLanguage): ResolvedLang {
+    // The v1 fork's AppLanguage (Interface setting, restored in v1 with
+    // the appearance layer) wins; System follows the device locale.
     val config = LocalConfiguration.current
-    return remember(config.locales[0]?.language) {
-        val tag = config.locales[0]?.language ?: "en"
-        if (tag.startsWith("fa")) ResolvedLang.Persian else ResolvedLang.English
+    return remember(appLanguage, config.locales[0]?.language) {
+        when (appLanguage) {
+            AppLanguage.English -> ResolvedLang.English
+            AppLanguage.Persian -> ResolvedLang.Persian
+            AppLanguage.System -> {
+                val tag = config.locales[0]?.language ?: "en"
+                if (tag.startsWith("fa")) ResolvedLang.Persian else ResolvedLang.English
+            }
+        }
     }
 }
 

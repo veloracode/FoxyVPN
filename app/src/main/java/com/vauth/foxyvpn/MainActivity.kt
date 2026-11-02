@@ -11,15 +11,21 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.content.ContextCompat
 import androidx.navigation.compose.rememberNavController
 import androidx.compose.runtime.CompositionLocalProvider
 import com.vauth.foxyvpn.ui.l10n.LocalL10n
 import com.vauth.foxyvpn.ui.l10n.rememberResolvedLang
 import com.vauth.foxyvpn.ui.navigation.FoxyNavGraph
+import com.vauth.foxyvpn.ui.theme.AppLanguage
 import com.vauth.foxyvpn.ui.theme.FoxyVpnTheme
-import com.vauth.foxyvpn.ui.theme.rememberThemeController
+import com.vauth.foxyvpn.ui.theme.rememberAppearanceController
 import com.vauth.foxyvpn.update.UpdatePrompt
 import com.vauth.foxyvpn.vpn.FoxyVpnService
 
@@ -79,21 +85,46 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val app = application as FoxyVpnApp
         setContent {
-            val themeController = rememberThemeController(app.settingsStore)
-            FoxyVpnTheme(themeMode = themeController.mode) {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    val navController = rememberNavController()
-                    // Fork addition: ambient language for the fork's
-                    // screens/strings (upstream screens use resources).
-                    CompositionLocalProvider(LocalL10n provides rememberResolvedLang()) {
-                    UpdatePrompt(app.appUpdater)
-                    FoxyNavGraph(
-                        navController = navController,
-                        container = app,
-                        themeController = themeController,
-                        onRequestConnect = { requestConnect() },
-                        onDisconnect = { FoxyVpnService.stop(this) },
-                    )
+            // The fork's appearance layer (v1 fork, restored in v1):
+            // theme, app design, font scale and language all come from
+            // the Interface settings via the AppearanceController.
+            val appearance = rememberAppearanceController(app.settingsStore)
+
+            val density = LocalDensity.current
+            val fontScale = appearance.uiFontScale.scale
+            val scaledDensity = remember(density, fontScale) {
+                if (fontScale == 1f) density else Density(density.density, density.fontScale * fontScale)
+            }
+            val systemDirection = LocalLayoutDirection.current
+            val layoutDirection = when (appearance.appLanguage) {
+                AppLanguage.System -> systemDirection
+                AppLanguage.English -> LayoutDirection.Ltr
+                AppLanguage.Persian -> LayoutDirection.Rtl
+            }
+            val resolvedLang = rememberResolvedLang(appearance.appLanguage)
+
+            FoxyVpnTheme(
+                themeMode = appearance.themeMode,
+                dynamicColor = appearance.dynamicColor,
+                colorStyle = appearance.colorStyle,
+                accentColorIndex = appearance.accentColorIndex,
+                colorContrast = appearance.colorContrast,
+            ) {
+                CompositionLocalProvider(
+                    LocalDensity provides scaledDensity,
+                    LocalLayoutDirection provides layoutDirection,
+                    LocalL10n provides resolvedLang,
+                ) {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        val navController = rememberNavController()
+                        UpdatePrompt(app.appUpdater)
+                        FoxyNavGraph(
+                            navController = navController,
+                            container = app,
+                            appearance = appearance,
+                            onRequestConnect = { requestConnect() },
+                            onDisconnect = { FoxyVpnService.stop(this) },
+                        )
                     }
                 }
             }

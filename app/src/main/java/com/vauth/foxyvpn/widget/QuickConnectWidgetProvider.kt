@@ -13,7 +13,7 @@ import com.vauth.foxyvpn.FoxyVpnApp
 import com.vauth.foxyvpn.MainActivity
 import com.vauth.foxyvpn.R
 import com.vauth.foxyvpn.data.SettingsStore
-import com.vauth.foxyvpn.data.ThemeMode
+import com.vauth.foxyvpn.ui.theme.ThemeMode
 import com.vauth.foxyvpn.data.TokenStore
 import com.vauth.foxyvpn.data.model.ConnectionState
 import com.vauth.foxyvpn.vpn.FoxyVpnService
@@ -147,6 +147,7 @@ class QuickConnectWidgetProvider : AppWidgetProvider() {
                     ThemeMode.SYSTEM -> systemDark
                     ThemeMode.LIGHT -> false
                     ThemeMode.DARK -> true
+                    ThemeMode.AMOLED -> true
                 }
 
             val bgRes =
