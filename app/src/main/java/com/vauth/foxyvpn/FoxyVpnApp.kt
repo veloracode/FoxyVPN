@@ -67,7 +67,7 @@ class FoxyVpnApp : Application(), AppContainer {
         guardianClient = GuardianClient()
         serverListClient = ServerListClient(this)
         accountStore = AccountStore(this)
-        authRepository = FxaAuthRepository(tokenStore, accountStore = accountStore)
+        authRepository = FxaAuthRepository(tokenStore)
         accountRepository = AccountRepository(accountStore, tokenStore)
         accountRepository.migrateAndReconcile()
         installControlPlaneHooks()
@@ -84,6 +84,7 @@ class FoxyVpnApp : Application(), AppContainer {
     private fun installControlPlaneHooks() {
         ControlPlaneHttp.apiProxyProvider = { settingsStore.effectiveApiProxy }
         ControlPlaneHttp.apiRelayProvider = { settingsStore.effectiveApiRelayUrl }
+        ControlPlaneHttp.tlsSplitModeProvider = { settingsStore.tlsSplitMode }
         settingsStore.addControlPlaneSettingsListener {
             ControlPlaneHttp.onSettingsChanged()
         }

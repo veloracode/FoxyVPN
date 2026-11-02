@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,27 +27,22 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -59,18 +53,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.vauth.foxyvpn.data.FxaAuthRepository
 import com.vauth.foxyvpn.data.GUARDIAN_ENDPOINT_DEFAULT
 import com.vauth.foxyvpn.data.GuardianClient
 import com.vauth.foxyvpn.data.AccountStore
 import com.vauth.foxyvpn.data.formatBytes
-import com.vauth.foxyvpn.data.model.BatchImportItemResult
 import com.vauth.foxyvpn.data.model.VpnAccount
 import kotlinx.coroutines.launch
 
@@ -81,20 +71,20 @@ fun AccountScreen(
     accountStore: AccountStore,
     onSwitchAccount: (VpnAccount) -> Unit,
     onRemoveAccount: (VpnAccount) -> Unit,
+    onAddAccount: () -> Unit,
     onBack: () -> Unit,
 ) {
     // Fork screen, re-layered on the v2 port's storage split: the account
     // list lives in AccountStore; exactly one account is ACTIVE — its
     // credentials are the session in upstream's TokenStore, and the VPN
-    // connects with it. (The v1 fork's simultaneous session pool has no
-    // v2 counterpart and was dropped with the sing-box core migration.)
+    // connects with it. Adding an account runs the same browser sign-in
+    // as the first one (see the add-account flow); the screen itself
+    // only lists, switches, refreshes quotas and removes.
     val scope = rememberCoroutineScope()
     val accounts by accountStore.accountsFlow.collectAsState()
     val activeAccountId by accountStore.activeAccountIdFlow.collectAsState()
     val usage by accountStore.usageFlow.collectAsState()
 
-    var showImportSheet by remember { mutableStateOf(false) }
-    var showLoginDialog by remember { mutableStateOf(false) }
     var refreshingQuotas by remember { mutableStateOf(false) }
     var banner by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<VpnAccount?>(null) }
@@ -181,23 +171,13 @@ fun AccountScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { showImportSheet = true },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(s("Batch import"))
-                }
-                FilledTonalButton(
-                    onClick = { showLoginDialog = true },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(s("Add account"))
-                }
+            Button(
+                onClick = onAddAccount,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(s("Add account"))
             }
 
             Spacer(Modifier.height(12.dp))
@@ -242,18 +222,6 @@ fun AccountScreen(
         )
     }
 
-    if (showImportSheet) {
-        BatchImportBottomSheet(
-            authRepository = authRepository,
-            onDismiss = { showImportSheet = false },
-        )
-    }
-    if (showLoginDialog) {
-        SingleAccountLoginDialog(
-            authRepository = authRepository,
-            onDismiss = { showLoginDialog = false },
-        )
-    }
 }
 
 @Composable
@@ -281,7 +249,7 @@ private fun EmptyAccountsHint() {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Add one account or paste a whole list — each gets its own VPN session and they share the load.",
+                "Sign in with another Firefox account to add it here. The account marked Active is the one the VPN connects with — switch any time.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = cs.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -386,149 +354,6 @@ private fun AccountCard(
             account.lastError?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, style = MaterialTheme.typography.labelSmall, color = cs.error, maxLines = 2)
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun BatchImportBottomSheet(
-    authRepository: FxaAuthRepository,
-    onDismiss: () -> Unit,
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(s("Batch import"), style = MaterialTheme.typography.titleLargeEmphasized)
-            GuidedBatchImport(authRepository = authRepository)
-        }
-    }
-}
-
-@Composable
-private fun SingleAccountLoginDialog(
-    authRepository: FxaAuthRepository,
-    onDismiss: () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    // If an account sign-in is still pending its email code (e.g. the app was
-    // killed mid-flow), reopen straight at the code step for that account.
-    val restoredPending = remember {
-        authRepository.pendingLogin()?.takeIf { it.kind == FxaAuthRepository.PendingKind.ACCOUNT }
-    }
-    var email by remember { mutableStateOf(restoredPending?.email ?: "") }
-    var password by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var awaitingCode by remember { mutableStateOf(restoredPending != null) }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var notice by remember { mutableStateOf<String?>(null) }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-            Column(
-                Modifier.padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(s("Add account"), style = MaterialTheme.typography.titleLargeEmphasized)
-                if (!awaitingCode) {
-                    OutlinedTextField(
-                        value = email,
-                        onValueChange = { email = it },
-                        label = { Text(s("Email")) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text(s("Password")) },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } else {
-                    Text(s("Enter the confirmation code sent to your email"), style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        email,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it.replace(Regex("[\\s]+"), "") },
-                        label = { Text(s("Confirmation code")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                error?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-                notice?.let {
-                    Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
-                }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    if (awaitingCode) {
-                        TextButton(
-                            onClick = {
-                                scope.launch {
-                                    authRepository.resendPendingCode()
-                                        .onSuccess { notice = "A new code was sent." }
-                                        .onFailure { error = it.message ?: "Could not resend the code" }
-                                }
-                            },
-                            enabled = !busy,
-                        ) { Text(s("Resend code")) }
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    TextButton(onClick = onDismiss) { Text(s("Cancel")) }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            busy = true
-                            error = null
-                            notice = null
-                            scope.launch {
-                                if (!awaitingCode) {
-                                    authRepository.beginAccountLogin(email.trim(), password)
-                                        .onSuccess { step ->
-                                            when (step) {
-                                                is FxaAuthRepository.AccountLoginStep.Completed -> onDismiss()
-                                                is FxaAuthRepository.AccountLoginStep.NeedsCode -> awaitingCode = true
-                                            }
-                                        }
-                                        .onFailure { error = it.message ?: "Sign-in failed" }
-                                } else {
-                                    authRepository.submitPendingAccountCode(code)
-                                        .onSuccess { onDismiss() }
-                                        .onFailure { error = it.message ?: "Verification failed" }
-                                }
-                                busy = false
-                            }
-                        },
-                        enabled = !busy &&
-                            (if (awaitingCode) code.isNotBlank() else email.isNotBlank() && password.isNotBlank()),
-                    ) {
-                        if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text(if (awaitingCode) s("Verify") else s("Sign in"))
-                    }
-                }
-                if (!awaitingCode) {
-                    AccountHelpRow()
-                }
             }
         }
     }

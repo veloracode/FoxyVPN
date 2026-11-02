@@ -26,11 +26,3 @@ data class VpnAccount(
     val uid: String? = null,
     val lastError: String? = null,
 )
-
-/** The per-item outcome of a batch import, for the results list. */
-data class BatchImportItemResult(
-    val identifier: String,
-    val success: Boolean,
-    val error: String? = null,
-    val account: VpnAccount? = null,
-)

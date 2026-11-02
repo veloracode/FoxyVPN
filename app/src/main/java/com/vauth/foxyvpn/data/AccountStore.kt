@@ -17,9 +17,9 @@ private const val TAG = "AccountStore"
  * Upstream v2's TokenStore holds exactly one session — the ACTIVE
  * account's — and is not modified by this layer. This store holds every
  * account the user has added (credentials included), which one is
- * active, the pending legacy sign-in slot, and per-account usage
- * counters. AccountRepository moves credentials between here and the
- * TokenStore when the active account changes.
+ * active, and per-account usage counters. AccountRepository moves
+ * credentials between here and the TokenStore when the active account
+ * changes.
  *
  * Serialization is hand-rolled org.json (the v2 tree carries no
  * kotlinx-serialization), and the one-time migration below reads the
@@ -93,17 +93,6 @@ class AccountStore(context: Context) {
     }
 
     @Synchronized
-    fun addAccounts(accounts: List<VpnAccount>) {
-        if (accounts.isEmpty()) return
-        val current = _accountsFlow.value.toMutableList()
-        for (account in accounts) {
-            current.removeAll { it.id == account.id || it.email.equals(account.email, ignoreCase = true) }
-            current.add(account)
-        }
-        saveAccounts(current)
-    }
-
-    @Synchronized
     fun removeAccount(id: String) {
         saveAccounts(_accountsFlow.value.filterNot { it.id == id })
         resetUsedBytes(id)
@@ -121,12 +110,11 @@ class AccountStore(context: Context) {
 
     /**
      * The explicit global sign-out: every stored account, the active
-     * marker, the pending sign-in and all usage counters go. Mirrors the
-     * v1 fork's clearAll semantics — per-account removal is removeAccount.
+     * marker and all usage counters go. Mirrors the v1 fork's clearAll
+     * semantics — per-account removal is removeAccount.
      */
     @Synchronized
     fun clearAllAccounts() {
-        clearPendingLogin()
         val ids = _accountsFlow.value.map { it.id }
         prefs.edit().putString(KEY_ACCOUNTS_JSON, "[]").commit()
         _accountsFlow.value = emptyList()
@@ -144,36 +132,6 @@ class AccountStore(context: Context) {
             prefs.edit().putString(KEY_ACTIVE_ACCOUNT_ID, id).commit()
         }
         _activeAccountIdFlow.value = id
-    }
-
-    // ------------------------------------------------------------------
-    // Pending legacy sign-in (email/password + emailed code). A single
-    // slot, as in the v1 fork: one interactive sign-in at a time.
-    // ------------------------------------------------------------------
-
-    fun savePendingLogin(email: String, sessionToken: String, kind: String) {
-        prefs
-            .edit()
-            .putString(KEY_PENDING_EMAIL, email)
-            .putString(KEY_PENDING_SESSION_TOKEN, sessionToken)
-            .putString(KEY_PENDING_KIND, kind)
-            .commit()
-    }
-
-    fun loadPendingLogin(): Triple<String, String, String>? {
-        val email = prefs.getString(KEY_PENDING_EMAIL, null) ?: return null
-        val token = prefs.getString(KEY_PENDING_SESSION_TOKEN, null) ?: return null
-        val kind = prefs.getString(KEY_PENDING_KIND, null) ?: return null
-        return Triple(email, token, kind)
-    }
-
-    fun clearPendingLogin() {
-        prefs
-            .edit()
-            .remove(KEY_PENDING_EMAIL)
-            .remove(KEY_PENDING_SESSION_TOKEN)
-            .remove(KEY_PENDING_KIND)
-            .commit()
     }
 
     // ------------------------------------------------------------------
@@ -318,9 +276,6 @@ class AccountStore(context: Context) {
     companion object {
         private const val KEY_ACCOUNTS_JSON = "accounts_json_v2"
         private const val KEY_ACTIVE_ACCOUNT_ID = "active_account_id"
-        private const val KEY_PENDING_EMAIL = "pending_login_email"
-        private const val KEY_PENDING_SESSION_TOKEN = "pending_login_session_token"
-        private const val KEY_PENDING_KIND = "pending_login_kind"
         private const val KEY_MIGRATED_V1 = "migrated_from_v1"
         private const val LEGACY_KEY_ACCOUNTS_JSON = "accounts_json_v1"
     }

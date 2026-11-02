@@ -2,6 +2,9 @@ package com.vauth.foxyvpn.data
 
 import android.net.Network
 import android.webkit.CookieManager
+import com.vauth.foxyvpn.vpn.upstream.TlsClientHelloSplitter
+import java.io.FilterOutputStream
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -138,17 +141,82 @@ class SimpleCookieJar : CookieJar {
 }
 
 /**
+ * Wraps a control-plane socket's output stream and splits the first
+ * TLS ClientHello it carries, per the configured
+ * [SettingsStore.TlsSplitMode] (the fork's control-plane TLS split,
+ * restored in v1 from v1.1.4/v1.1.5). Non-ClientHello writes and the
+ * OFF mode pass through untouched, and only the first matching write
+ * is split. Restored verbatim from the v1 fork.
+ */
+// Internal (not private) so unit tests can drive the stream directly;
+// visibility only — no behavior depends on it.
+internal class SplitClientHelloOutputStream(
+    out: OutputStream,
+    private val modeProvider: () -> SettingsStore.TlsSplitMode,
+    private val onSplit: () -> Unit = {},
+) : FilterOutputStream(out) {
+    private var splitDone = false
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        val mode = modeProvider()
+        if (splitDone || mode == SettingsStore.TlsSplitMode.OFF) {
+            out.write(b, off, len)
+            return
+        }
+
+        if (!TlsClientHelloSplitter.looksLikeClientHello(b, off, len)) {
+            out.write(b, off, len)
+            return
+        }
+
+        splitDone = true
+        val segments = try {
+            TlsClientHelloSplitter.splitBytes(b, off, len, mode)
+        } catch (e: Throwable) {
+            null
+        }
+
+        if (segments.isNullOrEmpty()) {
+            out.write(b, off, len)
+            return
+        }
+
+        onSplit()
+        for (seg in segments) {
+            out.write(seg)
+            out.flush()
+        }
+    }
+
+    override fun write(b: ByteArray) {
+        write(b, 0, b.size)
+    }
+}
+
+/**
  * A control-plane socket. With an account proxy configured, the
  * connection is made to the SOCKS5 proxy instead and the handshake
  * (inside this socket, so the factory's protect() applies to the proxy
  * connection too) names the origin host — OkHttp's built-in SOCKS
  * support cannot be used, as it creates the proxy socket itself and
  * bypasses this socket factory entirely (no protect). Without a proxy
- * this is the plain platform connect, unchanged.
+ * this is the plain platform connect, unchanged. The output stream
+ * additionally carries the fork's TLS ClientHello split (see
+ * [SplitClientHelloOutputStream]); the SOCKS5 handshake uses the raw
+ * stream, as it is not TLS.
  */
 internal class ControlPlaneSocket(
+    private val modeProvider: () -> SettingsStore.TlsSplitMode = { SettingsStore.TlsSplitMode.OFF },
     private val proxyProvider: () -> SettingsStore.ApiProxySettings? = { null },
 ) : Socket() {
+    // One wrapper per socket, as the split state must be shared by
+    // every getOutputStream() call.
+    private var stream: OutputStream? = null
+
+    override fun getOutputStream(): OutputStream =
+        stream ?: SplitClientHelloOutputStream(super.getOutputStream(), modeProvider) {
+            runCatching { tcpNoDelay = true }
+        }.also { stream = it }
 
     override fun connect(endpoint: SocketAddress?, timeout: Int) {
         val proxy = proxyProvider()
@@ -192,6 +260,9 @@ internal class ProtectingSocketFactory(
         remoteAddress: InetSocketAddress? = null,
     ): Socket {
         val socket = ControlPlaneSocket(
+            modeProvider = {
+                ControlPlaneHttp.tlsSplitModeProvider?.invoke() ?: SettingsStore.TlsSplitMode.OFF
+            },
             proxyProvider = { if (useApiProxy) ControlPlaneHttp.apiProxyProvider?.invoke() else null },
         )
         try {
@@ -252,6 +323,9 @@ object ControlPlaneHttp {
 
     /** The configured API relay base URL (normalized https), or null. Set by the app. */
     @Volatile var apiRelayProvider: (() -> String?)? = null
+
+    /** The configured control-plane TLS split mode. Set by the app. */
+    @Volatile var tlsSplitModeProvider: (() -> SettingsStore.TlsSplitMode)? = null
 
     internal fun underlyingNetwork(): Network? {
         val provider = networkProvider ?: return null

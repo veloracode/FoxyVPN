@@ -2,10 +2,14 @@ package com.vauth.foxyvpn.ui.settings
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
@@ -13,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -21,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
@@ -36,11 +42,9 @@ import com.vauth.foxyvpn.ui.l10n.s
  *
  * - [ForkAccountsRow]: entry to the multi-account screen.
  * - [AntiBlockSettingsSection]: "When Mozilla can't be reached" — the
- *   two control-plane fallbacks that survived the v2.0.0 port (the
- *   in-socket SOCKS5 account proxy and the API relay). The v1 fork's
- *   third fallback, control-plane TLS splitting, was dropped: upstream
- *   v2 removed its own control-plane splitting and its tunnel-side
- *   anti-censorship suite supersedes the idea.
+ *   three control-plane fallbacks, as in the v1 fork: TLS split mode
+ *   (the fork's own control-plane ClientHello splitter, restored in
+ *   v1), the in-socket SOCKS5 account proxy, and the API relay.
  *
  * The section is shown on the settings screen AND pre-login (through
  * the login screen's gear), because these toggles exist to unblock
@@ -52,7 +56,7 @@ import com.vauth.foxyvpn.ui.l10n.s
 fun ForkAccountsRow(onOpenAccounts: () -> Unit) {
     ListItem(
         headlineContent = { Text(s("Accounts")) },
-        supportingContent = { Text(s("Multi-account list, quotas and batch import")) },
+        supportingContent = { Text(s("Multi-account list, quotas and switching")) },
         trailingContent = {
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
         },
@@ -62,6 +66,7 @@ fun ForkAccountsRow(onOpenAccounts: () -> Unit) {
 
 @Composable
 fun AntiBlockSettingsSection(settingsStore: SettingsStore) {
+    var tlsSplitMode by remember { mutableStateOf(settingsStore.tlsSplitMode) }
     var apiProxyEnabled by remember { mutableStateOf(settingsStore.apiProxyEnabled) }
     var apiProxyHost by remember { mutableStateOf(settingsStore.apiProxyHost) }
     var apiProxyPort by remember { mutableStateOf(settingsStore.apiProxyPort) }
@@ -69,10 +74,22 @@ fun AntiBlockSettingsSection(settingsStore: SettingsStore) {
     var apiProxyPassword by remember { mutableStateOf(settingsStore.apiProxyPassword) }
     var apiRelayEnabled by remember { mutableStateOf(settingsStore.apiRelayEnabled) }
     var apiRelayUrl by remember { mutableStateOf(settingsStore.apiRelayUrl) }
+    var showTlsSplitDialog by remember { mutableStateOf(false) }
     var showApiProxyAddressDialog by remember { mutableStateOf(false) }
     var showApiProxyCredentialsDialog by remember { mutableStateOf(false) }
     var showApiRelayUrlDialog by remember { mutableStateOf(false) }
 
+    if (showTlsSplitDialog) {
+        TlsSplitModeDialog(
+            current = tlsSplitMode,
+            onDismiss = { showTlsSplitDialog = false },
+            onConfirm = {
+                tlsSplitMode = it
+                settingsStore.tlsSplitMode = it
+                showTlsSplitDialog = false
+            },
+        )
+    }
     if (showApiProxyAddressDialog) {
         ApiProxyAddressDialog(
             currentHost = apiProxyHost,
@@ -118,6 +135,14 @@ fun AntiBlockSettingsSection(settingsStore: SettingsStore) {
     }
 
     ForkSectionLabel(s("When Mozilla can't be reached"))
+    ListItem(
+        headlineContent = { Text(s("TLS split mode")) },
+        supportingContent = { Text(tlsSplitMode.label) },
+        trailingContent = {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+        },
+        modifier = Modifier.clickable { showTlsSplitDialog = true },
+    )
     ForkToggleRow(
         title = s("Account proxy"),
         summary = s("Send sign-in and account requests through a SOCKS5 proxy"),
@@ -341,6 +366,54 @@ private fun ApiRelayUrlDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(trimmed) }, enabled = isValid) { Text(s("Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(s("Cancel")) }
+        },
+    )
+}
+
+@Composable
+private fun TlsSplitModeDialog(
+    current: SettingsStore.TlsSplitMode,
+    onDismiss: () -> Unit,
+    onConfirm: (SettingsStore.TlsSplitMode) -> Unit,
+) {
+    var selected by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(s("TLS split mode")) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    s("Split the TLS hello of account and server requests, for a network that filters by server name."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                SettingsStore.TlsSplitMode.entries.forEach { mode ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = selected == mode, onClick = { selected = mode })
+                            .padding(vertical = 4.dp),
+                    ) {
+                        RadioButton(selected = selected == mode, onClick = { selected = mode })
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(mode.label)
+                            Text(
+                                mode.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selected) }) { Text(s("Save")) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(s("Cancel")) }

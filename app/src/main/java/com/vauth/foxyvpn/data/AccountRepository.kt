@@ -77,9 +77,10 @@ class AccountRepository(
     }
 
     /**
-     * Registers the just-completed sign-in (its session is already in
-     * the TokenStore) as the active account. Called after browser,
-     * legacy and guided sign-ins with the account's real email.
+     * Registers the just-completed browser sign-in (its session is
+     * already in the TokenStore) as the active account. Dedupe is by
+     * email, case-insensitive: capturing an account that is already in
+     * the list refreshes that entry in place instead of duplicating it.
      */
     fun captureActiveSession(email: String, uid: String? = null): VpnAccount? {
         val session = tokenStore.loadAuth() ?: return null
@@ -126,6 +127,31 @@ class AccountRepository(
             true
         } catch (superseded: IllegalStateException) {
             AppLogger.w(TAG, "account switch was superseded", superseded)
+            false
+        }
+    }
+
+    /**
+     * Installs [accountId]'s STORED credentials as the TokenStore
+     * session WITHOUT snapshotting the current session anywhere.
+     *
+     * This is the add-account flow's restore path: if capturing the
+     * just-finished sign-in fails after the new session already landed
+     * in the TokenStore, the previously active account is put back
+     * exactly as it was. [switchTo] must NOT be used there — it first
+     * snapshots the live session into the still-active entry, which
+     * would overwrite the previous account's credentials with the new
+     * account's session.
+     */
+    fun installStoredSession(accountId: String): Boolean {
+        val target = accountStore.getAccount(accountId) ?: return false
+        return try {
+            tokenStore.completeLoginIfCurrent(target.auth, tokenStore.sessionEpoch)
+            ControlPlaneHttp.cookieJar.clear()
+            accountStore.setActiveAccountId(accountId)
+            true
+        } catch (superseded: IllegalStateException) {
+            AppLogger.w(TAG, "session restore was superseded", superseded)
             false
         }
     }

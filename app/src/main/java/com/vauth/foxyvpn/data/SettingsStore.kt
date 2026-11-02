@@ -3,6 +3,20 @@ package com.vauth.foxyvpn.data
 import android.content.Context
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
+import com.vauth.foxyvpn.ui.theme.AppLanguage
+import com.vauth.foxyvpn.ui.theme.CardCornerStyle
+import com.vauth.foxyvpn.ui.theme.ColorContrast
+import com.vauth.foxyvpn.ui.theme.ColorStyle
+import com.vauth.foxyvpn.ui.theme.ConnectButtonStyle
+import com.vauth.foxyvpn.ui.theme.DEFAULT_ACCENT_INDEX
+import com.vauth.foxyvpn.ui.theme.ListDensity
+import com.vauth.foxyvpn.ui.theme.NavBarStyle
+import com.vauth.foxyvpn.ui.theme.ScreenTransition
+import com.vauth.foxyvpn.ui.theme.ThemeMode
+import com.vauth.foxyvpn.ui.theme.UiFontScale
+import com.vauth.foxyvpn.vpn.FoxyVpnService
+import com.vauth.foxyvpn.widget.QuickConnectWidgetProvider
+
 class SettingsStore(context: Context) {
     internal val proxySettingsLock = Any()
     private val appContext = context.applicationContext
@@ -82,7 +96,149 @@ class SettingsStore(context: Context) {
                 ?: ThemeMode.SYSTEM
         set(value) {
             prefs.edit().putString(KEY_THEME_MODE, value.name).apply()
+            QuickConnectWidgetProvider.updateAll(appContext, FoxyVpnService.state.value)
         }
+
+    var appDesign: AppDesign
+        get() = AppDesign.entries.firstOrNull {
+            it.name == prefs.getString(KEY_APP_DESIGN, null)
+        } ?: AppDesign.PIXEL
+        set(value) { prefs.edit().putString(KEY_APP_DESIGN, value.name).apply() }
+
+    // ------------------------------------------------------------------
+    // Interface / appearance settings (ported from ZedSecure's Ui page).
+    // Defaults match ZedSecure's defaults.
+    // ------------------------------------------------------------------
+
+    var colorStyle: ColorStyle
+        get() = ColorStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_COLOR_STYLE, null)
+        } ?: ColorStyle.ZedSecure
+        set(value) { prefs.edit().putString(KEY_COLOR_STYLE, value.name).apply() }
+
+    var dynamicColor: Boolean
+        get() = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
+        set(value) { prefs.edit().putBoolean(KEY_DYNAMIC_COLOR, value).apply() }
+
+    var accentColorIndex: Int
+        get() = if (prefs.contains(KEY_ACCENT_COLOR_INDEX)) {
+            prefs.getInt(KEY_ACCENT_COLOR_INDEX, DEFAULT_ACCENT_INDEX)
+        } else {
+            DEFAULT_ACCENT_INDEX // Signal blue for fresh installs only
+        }
+        set(value) { prefs.edit().putInt(KEY_ACCENT_COLOR_INDEX, value).apply() }
+
+    var hapticFeedback: Boolean
+        get() = prefs.getBoolean(KEY_HAPTIC_FEEDBACK, true) // default ON
+        set(value) { prefs.edit().putBoolean(KEY_HAPTIC_FEEDBACK, value).apply() }
+
+    var colorContrast: ColorContrast
+        get() = ColorContrast.entries.firstOrNull {
+            it.name == prefs.getString(KEY_COLOR_CONTRAST, null)
+        } ?: ColorContrast.Standard
+        set(value) { prefs.edit().putString(KEY_COLOR_CONTRAST, value.name).apply() }
+
+    var reduceMotion: Boolean
+        get() = prefs.getBoolean(KEY_REDUCE_MOTION, false)
+        set(value) { prefs.edit().putBoolean(KEY_REDUCE_MOTION, value).apply() }
+
+    var uiFontScale: UiFontScale
+        get() = UiFontScale.entries.firstOrNull {
+            it.name == prefs.getString(KEY_UI_FONT_SCALE, null)
+        } ?: UiFontScale.Normal
+        set(value) { prefs.edit().putString(KEY_UI_FONT_SCALE, value.name).apply() }
+
+    var appLanguage: AppLanguage
+        get() = AppLanguage.entries.firstOrNull {
+            it.name == prefs.getString(KEY_APP_LANGUAGE, null)
+        } ?: AppLanguage.System
+        set(value) { prefs.edit().putString(KEY_APP_LANGUAGE, value.name).apply() }
+
+    var screenTransition: ScreenTransition
+        get() = ScreenTransition.entries.firstOrNull {
+            it.name == prefs.getString(KEY_SCREEN_TRANSITION, null)
+        } ?: ScreenTransition.Push
+        set(value) { prefs.edit().putString(KEY_SCREEN_TRANSITION, value.name).apply() }
+
+    var navBarStyle: NavBarStyle
+        get() = NavBarStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_NAV_BAR_STYLE, null)
+        } ?: NavBarStyle.ExpressivePill
+        set(value) { prefs.edit().putString(KEY_NAV_BAR_STYLE, value.name).apply() }
+
+    var connectButtonStyle: ConnectButtonStyle
+        get() = ConnectButtonStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_CONNECT_BUTTON_STYLE, null)
+        } ?: ConnectButtonStyle.Hero
+        set(value) { prefs.edit().putString(KEY_CONNECT_BUTTON_STYLE, value.name).apply() }
+
+    var cardCornerStyle: CardCornerStyle
+        get() = CardCornerStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_CARD_CORNER_STYLE, null)
+        } ?: CardCornerStyle.Rounded
+        set(value) { prefs.edit().putString(KEY_CARD_CORNER_STYLE, value.name).apply() }
+
+    var listDensity: ListDensity
+        get() = ListDensity.entries.firstOrNull {
+            it.name == prefs.getString(KEY_LIST_DENSITY, null)
+        } ?: ListDensity.Comfortable
+        set(value) { prefs.edit().putString(KEY_LIST_DENSITY, value.name).apply() }
+
+    var themeProfileId: String?
+        get() = prefs.getString(KEY_THEME_PROFILE_ID, null)
+        set(value) { prefs.edit().putString(KEY_THEME_PROFILE_ID, value).apply() }
+
+    var customConnectColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_CONNECT_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONNECT_COLOR, value).apply() }
+
+    var customConnectedColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_CONNECTED_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONNECTED_COLOR, value).apply() }
+
+    var customServerCardColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_SERVER_CARD_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_SERVER_CARD_COLOR, value).apply() }
+
+    var customServerActiveColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_SERVER_ACTIVE_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_SERVER_ACTIVE_COLOR, value).apply() }
+
+    var customConfigCardColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_CONFIG_CARD_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONFIG_CARD_COLOR, value).apply() }
+
+    var customConfigCardTextColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_CONFIG_CARD_TEXT_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_CONFIG_CARD_TEXT_COLOR, value).apply() }
+
+    var showServerPing: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_SERVER_PING, true)
+        set(value) { prefs.edit().putBoolean(KEY_SHOW_SERVER_PING, value).apply() }
+
+    var showServerUsage: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_SERVER_USAGE, true)
+        set(value) { prefs.edit().putBoolean(KEY_SHOW_SERVER_USAGE, value).apply() }
+
+    var monospaceAddress: Boolean
+        get() = prefs.getBoolean(KEY_MONOSPACE_ADDRESS, false)
+        set(value) { prefs.edit().putBoolean(KEY_MONOSPACE_ADDRESS, value).apply() }
+
+    var confirmRemove: Boolean
+        get() = prefs.getBoolean(KEY_CONFIRM_REMOVE, true)
+        set(value) { prefs.edit().putBoolean(KEY_CONFIRM_REMOVE, value).apply() }
+
+    var homeAfterSelect: Boolean
+        get() = prefs.getBoolean(KEY_HOME_AFTER_SELECT, false)
+        set(value) { prefs.edit().putBoolean(KEY_HOME_AFTER_SELECT, value).apply() }
+
+    var doubleColumnDisplay: Boolean
+        get() = prefs.getBoolean(KEY_DOUBLE_COLUMN_DISPLAY, false)
+        set(value) { prefs.edit().putBoolean(KEY_DOUBLE_COLUMN_DISPLAY, value).apply() }
+
+    var exitCheckEnabled: Boolean
+        get() = prefs.getBoolean(KEY_EXIT_CHECK, true)
+        set(value) { prefs.edit().putBoolean(KEY_EXIT_CHECK, value).apply() }
 
     var latencyProbeUrl: String
         get() =
@@ -522,6 +678,15 @@ class SettingsStore(context: Context) {
     // control plane behaves exactly as upstream's.
     // ------------------------------------------------------------------
 
+    /**
+     * Control-plane TLS split mode (the fork's third fallback): splits
+     * the TLS ClientHello of account/API requests. Default OFF; the
+     * tunnel itself is never affected.
+     */
+    var tlsSplitMode: TlsSplitMode
+        get() = TlsSplitMode.parse(prefs.getString(KEY_TLS_SPLIT_MODE, null))
+        set(value) { prefs.edit().putString(KEY_TLS_SPLIT_MODE, value.name).apply() }
+
     /** SOCKS5 proxy for control-plane requests only (the account proxy). */
     var apiProxyEnabled: Boolean
         get() = prefs.getBoolean(KEY_API_PROXY_ENABLED, false)
@@ -585,6 +750,7 @@ class SettingsStore(context: Context) {
      */
     fun addControlPlaneSettingsListener(listener: () -> Unit) {
         val keys = setOf(
+            KEY_TLS_SPLIT_MODE,
             KEY_API_PROXY_ENABLED, KEY_API_PROXY_HOST, KEY_API_PROXY_PORT,
             KEY_API_RELAY_ENABLED, KEY_API_RELAY_URL,
         )
@@ -603,11 +769,73 @@ class SettingsStore(context: Context) {
         val password: String,
     )
 
+    enum class AppDesign(val label: String) {
+        PIXEL(label = "Pixel"),
+        PORTAL(label = "Portal"),
+        OLD(label = "Classic"),
+    }
+
+    enum class TlsSplitMode(
+        val label: String,
+        val description: String,
+    ) {
+        OFF(
+            label = "Disabled",
+            description = "Standard TLS handshake without fragmentation",
+        ),
+        FIRST_BYTE(
+            label = "First byte",
+            description = "Splits TLS record header at byte 0 (0x16)",
+        ),
+        SNI(
+            label = "SNI hostname",
+            description = "Fragments the SNI extension across packets (defeats DPI)",
+        ),
+        ;
+
+        companion object {
+            /** Stored value → mode; anything unknown (or unset) is OFF. */
+            fun parse(raw: String?): TlsSplitMode =
+                entries.firstOrNull { it.name == raw } ?: OFF
+        }
+    }
+
     companion object {
         const val DEFAULT_LATENCY_PROBE_URL = "https://www.gstatic.com/generate_204"
         private const val KEY_LATENCY_PROBE_URL = "latency_probe_url"
 
         // Fork block keys (control-plane fallbacks; see the class body).
+        // Fork appearance keys (v1 fork's Interface layer, restored in v1).
+        private const val KEY_APP_DESIGN = "app_design"
+        private const val KEY_COLOR_STYLE = "color_style"
+        private const val KEY_DYNAMIC_COLOR = "dynamic_color"
+        private const val KEY_ACCENT_COLOR_INDEX = "accent_color_index"
+        private const val KEY_HAPTIC_FEEDBACK = "haptic_feedback"
+        private const val KEY_COLOR_CONTRAST = "color_contrast"
+        private const val KEY_REDUCE_MOTION = "reduce_motion"
+        private const val KEY_UI_FONT_SCALE = "ui_font_scale"
+        private const val KEY_APP_LANGUAGE = "app_language"
+        private const val KEY_SCREEN_TRANSITION = "screen_transition"
+        private const val KEY_NAV_BAR_STYLE = "nav_bar_style"
+        private const val KEY_CONNECT_BUTTON_STYLE = "connect_button_style"
+        private const val KEY_CARD_CORNER_STYLE = "card_corner_style"
+        private const val KEY_LIST_DENSITY = "list_density"
+        private const val KEY_THEME_PROFILE_ID = "theme_profile_id"
+        private const val KEY_CUSTOM_CONNECT_COLOR = "custom_connect_color"
+        private const val KEY_CUSTOM_CONNECTED_COLOR = "custom_connected_color"
+        private const val KEY_CUSTOM_SERVER_CARD_COLOR = "custom_server_card_color"
+        private const val KEY_CUSTOM_SERVER_ACTIVE_COLOR = "custom_server_active_color"
+        private const val KEY_CUSTOM_CONFIG_CARD_COLOR = "custom_config_card_color"
+        private const val KEY_CUSTOM_CONFIG_CARD_TEXT_COLOR = "custom_config_card_text_color"
+        private const val KEY_SHOW_SERVER_PING = "show_server_ping"
+        private const val KEY_SHOW_SERVER_USAGE = "show_server_usage"
+        private const val KEY_MONOSPACE_ADDRESS = "monospace_address"
+        private const val KEY_CONFIRM_REMOVE = "confirm_remove"
+        private const val KEY_HOME_AFTER_SELECT = "home_after_select"
+        private const val KEY_DOUBLE_COLUMN_DISPLAY = "double_column_display"
+        private const val KEY_EXIT_CHECK = "exit_check_enabled"
+        const val UNSET_COLOR: Long = Long.MIN_VALUE
+        private const val KEY_TLS_SPLIT_MODE = "tls_split_mode"
         private const val KEY_API_PROXY_ENABLED = "api_proxy_enabled"
         private const val KEY_API_PROXY_HOST = "api_proxy_host"
         private const val KEY_API_PROXY_PORT = "api_proxy_port"
