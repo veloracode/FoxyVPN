@@ -110,6 +110,7 @@ fun AccountScreen(
                         account.copy(
                             auth = renewed,
                             quotaRemaining = entitlement.quotaRemaining,
+                            quotaFetchedAtEpochSeconds = System.currentTimeMillis() / 1000,
                             lastError = null,
                         ),
                     )

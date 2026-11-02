@@ -39,6 +39,10 @@ class SettingsStore(context: Context) {
         val quotaRemaining: Long?,
         val quotaMax: Long?,
         val unlimited: Boolean,
+        /** Account-list id the quota values belong to (null = unattributed). */
+        val quotaAccountId: String? = null,
+        /** When the quota values were fetched from the server (0 = never). */
+        val quotaFetchedAtEpochSeconds: Long = 0L,
     )
 
     private fun accountSnapshot() =
@@ -48,6 +52,8 @@ class SettingsStore(context: Context) {
             cachedQuotaRemaining,
             cachedQuotaMax,
             cachedIsUnlimited,
+            prefs.getString(KEY_CACHED_QUOTA_ACCOUNT_ID, null),
+            prefs.getLong(KEY_CACHED_QUOTA_FETCHED_AT, 0L),
         )
 
     private val mutableAccount = kotlinx.coroutines.flow.MutableStateFlow(accountSnapshot())
@@ -64,6 +70,8 @@ class SettingsStore(context: Context) {
                             KEY_CACHED_QUOTA_REMAINING,
                             KEY_CACHED_QUOTA_MAX,
                             KEY_CACHED_IS_UNLIMITED,
+                            KEY_CACHED_QUOTA_ACCOUNT_ID,
+                            KEY_CACHED_QUOTA_FETCHED_AT,
                         )
             ) {
                 mutableAccount.value = accountSnapshot()
@@ -307,7 +315,13 @@ class SettingsStore(context: Context) {
         mutableAccount.value = accountSnapshot()
     }
 
-    fun saveAccountQuota(unlimited: Boolean, remaining: Long?, maximum: Long?) {
+    fun saveAccountQuota(
+        unlimited: Boolean,
+        remaining: Long?,
+        maximum: Long?,
+        accountId: String? = null,
+        fetchedAtEpochSeconds: Long = 0L,
+    ) {
         val editor = prefs.edit().putBoolean(KEY_CACHED_IS_UNLIMITED, unlimited)
         if (remaining != null && remaining >= 0) {
             editor.putLong(KEY_CACHED_QUOTA_REMAINING, remaining)
@@ -318,6 +332,22 @@ class SettingsStore(context: Context) {
             editor.putLong(KEY_CACHED_QUOTA_MAX, maximum)
         } else if (unlimited) {
             editor.remove(KEY_CACHED_QUOTA_MAX)
+        }
+        // Identity + freshness of the values above (review decision
+        // 2026-11-02): readers must be able to tell WHICH account a
+        // cached quota belongs to and how old it is, so one account's
+        // numbers are never shown for another after a switch. Only
+        // callers that KNOW the attribution pass it (HomeViewModel,
+        // after its generation check); other writers (the VPN service)
+        // pass null/0 and the existing stamp is preserved rather than
+        // cleared — the stamp is only ever SET by an attributed write,
+        // and a stale stamp makes readers fall back to per-account
+        // values, never to the wrong account's numbers.
+        if (accountId != null) {
+            editor.putString(KEY_CACHED_QUOTA_ACCOUNT_ID, accountId)
+        }
+        if (fetchedAtEpochSeconds > 0) {
+            editor.putLong(KEY_CACHED_QUOTA_FETCHED_AT, fetchedAtEpochSeconds)
         }
         editor.apply()
         mutableAccount.value = accountSnapshot()
@@ -331,6 +361,8 @@ class SettingsStore(context: Context) {
             .remove(KEY_CACHED_QUOTA_REMAINING)
             .remove(KEY_CACHED_QUOTA_MAX)
             .remove(KEY_CACHED_IS_UNLIMITED)
+            .remove(KEY_CACHED_QUOTA_ACCOUNT_ID)
+            .remove(KEY_CACHED_QUOTA_FETCHED_AT)
             .apply()
         mutableAccount.value = accountSnapshot()
     }
@@ -910,6 +942,8 @@ class SettingsStore(context: Context) {
         private const val KEY_CACHED_QUOTA_REMAINING = "cached_quota_remaining"
         private const val KEY_CACHED_QUOTA_MAX = "cached_quota_max"
         private const val KEY_CACHED_IS_UNLIMITED = "cached_is_unlimited"
+        private const val KEY_CACHED_QUOTA_ACCOUNT_ID = "cached_quota_account_id"
+        private const val KEY_CACHED_QUOTA_FETCHED_AT = "cached_quota_fetched_at"
         const val DEFAULT_MTU = 1280
         const val MIN_MTU = 576
         const val MAX_MTU = 9000

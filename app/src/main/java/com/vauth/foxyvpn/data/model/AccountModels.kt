@@ -23,6 +23,8 @@ data class VpnAccount(
     val addedAtEpochSeconds: Long = System.currentTimeMillis() / 1000,
     val quotaMax: Long = DEFAULT_ACCOUNT_QUOTA_BYTES,
     val quotaRemaining: Long? = null,
+    /** When [quotaRemaining] was last fetched from the server (0 = never). */
+    val quotaFetchedAtEpochSeconds: Long = 0L,
     val uid: String? = null,
     val lastError: String? = null,
 )

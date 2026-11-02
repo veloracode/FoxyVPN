@@ -194,6 +194,7 @@ class AccountStore(context: Context) {
                     .put("addedAtEpochSeconds", account.addedAtEpochSeconds)
                     .put("quotaMax", account.quotaMax)
                     .put("quotaRemaining", account.quotaRemaining ?: JSONObject.NULL)
+                    .put("quotaFetchedAtEpochSeconds", account.quotaFetchedAtEpochSeconds)
                     .put("uid", account.uid ?: JSONObject.NULL)
                     .put("lastError", account.lastError ?: JSONObject.NULL),
             )
@@ -237,6 +238,7 @@ class AccountStore(context: Context) {
             } else {
                 null
             },
+            quotaFetchedAtEpochSeconds = item.optLong("quotaFetchedAtEpochSeconds", 0L),
             uid = item.optString("uid").takeIf { it.isNotEmpty() && !item.isNull("uid") },
             lastError = item.optString("lastError").takeIf {
                 it.isNotEmpty() && !item.isNull("lastError")
@@ -252,8 +254,15 @@ class AccountStore(context: Context) {
      * Imports the v1 fork's account list (`accounts_json_v1`, written by
      * the v1 TokenStore into the shared `foxyvpn_tokens` secure file)
      * the first time this store is found empty. Returns the imported
-     * accounts (empty when there was nothing to import). The legacy key
-     * is left in place; the migrated flag here makes this run once.
+     * accounts (empty when there was nothing to import).
+     *
+     * Ordering (review-hardened): the migrated flag is written ONLY
+     * after the outcome is known-good — the legacy payload decoded and
+     * the import verified in the store, or the payload genuinely
+     * absent. A read/decryption failure or an undecodable payload
+     * leaves the flag unset and the legacy source untouched, so the
+     * next start retries instead of silently dropping the accounts.
+     * Idempotent: a populated store or a set flag short-circuits.
      */
     @Synchronized
     fun migrateLegacyAccountsIfNeeded(): List<VpnAccount> {
@@ -262,15 +271,43 @@ class AccountStore(context: Context) {
         val legacyPrefs = SecurePreferences(appContext, "foxyvpn_tokens") { error ->
             error as? SecureStorageException ?: SecureStorageException(error)
         }
-        val raw = runCatching { legacyPrefs.getString(LEGACY_KEY_ACCOUNTS_JSON, null) }
-            .getOrNull()
-        prefs.edit().putString(KEY_MIGRATED_V1, "1").commit()
-        if (raw.isNullOrBlank()) return emptyList()
+        val rawResult = runCatching { legacyPrefs.getString(LEGACY_KEY_ACCOUNTS_JSON, null) }
+        val raw = rawResult.getOrElse {
+            // Storage read failure (e.g. a backup restored onto a new
+            // device whose keystore cannot decrypt): treat as empty for
+            // this run, never crash, retry next start.
+            AppLogger.w(TAG, "could not read the v1 account list for migration", it)
+            return emptyList()
+        }
+        if (raw.isNullOrBlank()) {
+            prefs.edit().putString(KEY_MIGRATED_V1, "1").commit()
+            return emptyList()
+        }
         val imported = runCatching { decodeAccounts(raw) }.onFailure {
             AppLogger.w(TAG, "could not decode the v1 account list for migration", it)
         }.getOrDefault(emptyList())
-        if (imported.isNotEmpty()) saveAccounts(imported)
+        if (imported.isEmpty()) return emptyList()
+        saveAccounts(imported)
+        if (getAccounts().size == imported.size) {
+            prefs.edit().putString(KEY_MIGRATED_V1, "1").commit()
+        }
         return imported
+    }
+
+    /**
+     * One-time hygiene for the removed legacy sign-in: v1.1.6 kept a
+     * pending email-code sign-in slot in this file, including an
+     * UNVERIFIED session token. The readers are gone with the feature;
+     * the persisted values must not linger. Removing absent keys is a
+     * no-op, so this is safe to call on every start.
+     */
+    @Synchronized
+    fun wipeLegacyPendingLogin() {
+        prefs.edit()
+            .remove(LEGACY_KEY_PENDING_EMAIL)
+            .remove(LEGACY_KEY_PENDING_SESSION_TOKEN)
+            .remove(LEGACY_KEY_PENDING_KIND)
+            .apply()
     }
 
     companion object {
@@ -278,5 +315,8 @@ class AccountStore(context: Context) {
         private const val KEY_ACTIVE_ACCOUNT_ID = "active_account_id"
         private const val KEY_MIGRATED_V1 = "migrated_from_v1"
         private const val LEGACY_KEY_ACCOUNTS_JSON = "accounts_json_v1"
+        private const val LEGACY_KEY_PENDING_EMAIL = "pending_login_email"
+        private const val LEGACY_KEY_PENDING_SESSION_TOKEN = "pending_login_session_token"
+        private const val LEGACY_KEY_PENDING_KIND = "pending_login_kind"
     }
 }

@@ -1,7 +1,5 @@
 package com.vauth.foxyvpn.ui.screens
 
-import android.webkit.CookieManager
-import android.webkit.WebStorage
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -21,150 +19,128 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vauth.foxyvpn.data.AccountRepository
-import com.vauth.foxyvpn.data.AccountStore
-import com.vauth.foxyvpn.data.ControlPlaneHttp
 import com.vauth.foxyvpn.data.FxaAuthRepository
-import com.vauth.foxyvpn.ui.LoginViewModel
+import com.vauth.foxyvpn.data.model.RuntimeAuth
 import com.vauth.foxyvpn.ui.l10n.s
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class AddPhase { PREPARING, BROWSING, FINISHING }
-
 /**
  * Add-account via the SAME browser sign-in as the first account
- * (user spec 2026-11-02): the new session is captured into the account
- * list and the previously active account is restored as active, so an
- * add never disturbs the account that was in use.
+ * (user spec 2026-11-02), implemented DETACHED (review decision
+ * 2026-11-02, replacing the earlier swap-and-restore design):
  *
- * The trap this flow is built around: the in-app browser keeps an FxA
- * web session, so a naive second sign-in silently re-authenticates the
- * SAME account. Preparation therefore wipes the WebView's cookie store
- * (and the control-plane cookie jar) before the browser opens, forcing
- * a fresh credential prompt. That cannot touch the active account: its
- * session lives in the TokenStore, not in WebView cookies — the same
- * separation the global sign-out (removeAllCookies) and every account
- * switch (cookieJar.clear) already rely on. Dedupe is the second line
- * of defense: if the user signs in with the same account anyway,
- * capturing it refreshes its existing entry instead of duplicating it.
+ * The token exchange and the profile fetch are stateless calls that
+ * take the new credentials as parameters; only a login COMPLETION
+ * writes the global TokenStore. This flow never calls a completion —
+ * it exchanges the captured credentials into a session value and
+ * stores it directly in the account list
+ * ([AccountRepository.addDetachedAccount]). The active account's
+ * TokenStore session is therefore never replaced: byte-exact
+ * preservation of the previous account is trivial, its tunnel is not
+ * even disconnected, and there is no kill-window that can leave the
+ * accounts mixed up. If anything fails before the store write, the
+ * add simply did not happen.
  *
- * Failure handling: if the new session cannot be captured after it
- * already replaced the TokenStore session, the previous account's
- * STORED session is reinstalled via
- * [AccountRepository.installStoredSession] — never via switchTo, whose
- * snapshot step would overwrite the previous entry with the new
- * session.
+ * The trap the preparation defends against: the in-app browser keeps
+ * an FxA web session, so a naive second sign-in silently
+ * re-authenticates the SAME account. The FxA web state (cookies +
+ * site storage) is wiped before the browser opens — the browser then
+ * asks for fresh credentials — and wiped again when the flow ends,
+ * so the WebView never holds a live FxA session at rest. That cannot
+ * touch the active account: its session lives in the TokenStore, not
+ * in WebView state (the same separation the global sign-out's cookie
+ * wipe already relies on). Dedupe is the second line of defense:
+ * identity is the FxA uid from the profile endpoint (email as
+ * fallback), and capturing an account that is already listed
+ * refreshes its entry instead of duplicating it.
  */
 @Composable
 fun AddAccountScreen(
     authRepository: FxaAuthRepository,
     accountRepository: AccountRepository,
-    accountStore: AccountStore,
-    onDisconnect: () -> Unit,
     onFinished: (String) -> Unit,
     onCanceled: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var phase by remember { mutableStateOf(AddPhase.PREPARING) }
-    val previousActiveId = remember { accountStore.activeAccountIdFlow.value }
-
-    val model: LoginViewModel =
-        viewModel(
-            factory = remember(authRepository) { LoginViewModel.factory(authRepository) }
-        )
-    val uiState by model.uiState.collectAsStateWithLifecycle()
+    var startUrl by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     // Resolved here, in composition: s() reads a CompositionLocal and
     // cannot be called from the finish coroutine below.
-    val msgRestored = s("Could not add the account — your previous account was restored.")
-    val msgFailed = s("Could not add the account.")
-    val msgAlready = s("That account is already here — its session was refreshed.")
     val msgAddedPrefix = s("Account added: ")
-    val msgNowActiveSuffix = s(" (now active)")
+    val msgRefreshed = s("That account is already here — its session was refreshed.")
+    val msgUnidentified =
+        s("Sign-in finished, but the account could not be identified. Nothing was added.")
+    val msgFailed = s("Could not add the account. Check the connection and try again.")
 
-    // Preparation: snapshot the live session into the active entry (so
-    // it holds the exact current credentials), stop the tunnel (it is
-    // about to change identity), then wipe the FxA web session.
+    // Preparation: wipe the FxA web session so the browser prompts for
+    // credentials; only open it once the wipe has landed.
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) { accountRepository.snapshotActiveSession() }
-        onDisconnect()
-        ControlPlaneHttp.cookieJar.clear()
-        isolateFxAWebSession {
-            phase = AddPhase.BROWSING
-            model.startBrowserLogin()
-        }
+        clearFxAWebState { startUrl = authRepository.getBrowserLoginUrl() }
     }
 
-    LaunchedEffect(uiState.signedIn) {
-        if (!uiState.signedIn || phase != AddPhase.BROWSING) return@LaunchedEffect
-        phase = AddPhase.FINISHING
+    fun finish(buildAuth: suspend () -> RuntimeAuth) {
+        if (busy) return
+        busy = true
+        errorMessage = null
         scope.launch {
-            val email = runCatching { authRepository.profileEmailForCurrentSession() }.getOrNull()
-            val captured = email?.let {
-                withContext(Dispatchers.IO) { accountRepository.captureActiveSession(it) }
-            }
-            when {
-                email == null || captured == null -> {
-                    // The new session is in the TokenStore but could
-                    // not be registered — put the previous account back
-                    // exactly as it was rather than leave the app in a
-                    // half-switched state.
-                    val restored = previousActiveId?.let {
-                        withContext(Dispatchers.IO) { accountRepository.installStoredSession(it) }
-                    } ?: false
-                    onFinished(
-                        if (restored) msgRestored else msgFailed
-                    )
-                }
-                previousActiveId == null || captured.id == previousActiveId -> {
-                    // Signed in with the account that was already
-                    // active: its entry was refreshed in place (dedupe),
-                    // nothing to restore.
-                    onFinished(msgAlready)
-                }
-                else -> {
-                    // Capture set the NEW account active; switch back so
-                    // the previously active account stays the one in
-                    // use. switchTo's snapshot writes the new session
-                    // into the new entry (where it belongs) on the way.
-                    val back = withContext(Dispatchers.IO) {
-                        accountRepository.switchTo(previousActiveId)
+            val outcome = runCatching {
+                val auth = withContext(Dispatchers.IO) { buildAuth() }
+                val identity = authRepository.profileIdentityForAuth(auth)
+                val email = identity.email
+                if (email.isNullOrBlank()) {
+                    null
+                } else {
+                    withContext(Dispatchers.IO) {
+                        accountRepository.addDetachedAccount(auth, email, identity.uid)
                     }
-                    onFinished(
-                        if (back) msgAddedPrefix + captured.email
-                        else msgAddedPrefix + captured.email + msgNowActiveSuffix
-                    )
                 }
             }
+            busy = false
+            outcome
+                .onSuccess { result ->
+                    // Whatever happened, no live FxA web session is
+                    // left behind.
+                    clearFxAWebState()
+                    if (result == null) {
+                        onFinished(msgUnidentified)
+                    } else {
+                        onFinished(
+                            if (result.wasExisting) msgRefreshed
+                            else msgAddedPrefix + result.account.email
+                        )
+                    }
+                }
+                .onFailure { errorMessage = it.message ?: msgFailed }
         }
     }
 
-    when (phase) {
-        AddPhase.BROWSING -> {
-            val startUrl = uiState.browserStartUrl
-            if (startUrl != null) {
-                BrowserLoginScreen(
-                    startUrl = startUrl,
-                    busy = uiState.isLoading,
-                    authRepository = authRepository,
-                    errorMessage = uiState.errorMessage,
-                    onTokensCaptured = model::completeBrowserLoginWithTokens,
-                    onSessionCaptured = model::completeBrowserLogin,
-                    onCanceled = {
-                        model.cancelVerification()
-                        onCanceled()
-                    },
-                )
-            } else {
-                PreparingUi(s("Opening sign-in…"))
-            }
-        }
-        AddPhase.PREPARING -> PreparingUi(s("Preparing…"))
-        AddPhase.FINISHING -> PreparingUi(s("Adding account…"))
+    val url = startUrl
+    if (url != null) {
+        BrowserLoginScreen(
+            startUrl = url,
+            busy = busy,
+            authRepository = authRepository,
+            errorMessage = errorMessage,
+            onTokensCaptured = { accessToken, refreshToken, expiresIn ->
+                finish {
+                    authRepository.detachedAuthWithTokens(accessToken, refreshToken, expiresIn)
+                }
+            },
+            onSessionCaptured = { sessionToken ->
+                finish { authRepository.exchangeBrowserSessionToken(sessionToken) }
+            },
+            onCanceled = {
+                clearFxAWebState()
+                onCanceled()
+            },
+        )
+    } else {
+        PreparingUi(s("Preparing…"))
     }
 }
 
@@ -176,24 +152,5 @@ private fun PreparingUi(text: String) {
             Spacer(Modifier.height(16.dp))
             Text(text, style = MaterialTheme.typography.bodyMedium)
         }
-    }
-}
-
-/**
- * Wipes the FxA web session so the add-account browser asks for fresh
- * credentials instead of silently re-using the signed-in account.
- * [onDone] fires once the cookie store reports the removal, so the
- * browser is only created after the wipe has landed.
- */
-private fun isolateFxAWebSession(onDone: () -> Unit) {
-    val manager = runCatching { CookieManager.getInstance() }.getOrNull()
-    if (manager == null) {
-        onDone()
-        return
-    }
-    runCatching { WebStorage.getInstance().deleteOrigin("https://accounts.firefox.com") }
-    manager.removeAllCookies {
-        runCatching { manager.flush() }
-        onDone()
     }
 }

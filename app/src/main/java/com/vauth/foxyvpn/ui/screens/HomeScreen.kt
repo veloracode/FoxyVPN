@@ -129,9 +129,43 @@ fun HomeScreen(
         if (state == ConnectionState.CONNECTED) homeModel.refreshAccount()
     }
     val activeAccount = accounts.firstOrNull { it.id == activeAccountId }
-    val quotaRemaining = accountSnapshot.quotaRemaining ?: activeAccount?.quotaRemaining
-    val quotaMax = accountSnapshot.quotaMax ?: activeAccount?.quotaMax
-    val quotaUnlimited = accountSnapshot.unlimited
+    // Quota attribution (review decision 2026-11-02): the settings
+    // snapshot is used ONLY when it is stamped with the ACTIVE
+    // account's id — right after a switch it still holds the previous
+    // account's numbers until the refresh lands, and those must never
+    // render as the new account's. The bridge is the active entry's
+    // own last-known values (server remaining when known, else the
+    // Accounts screen's device-usage estimate for that same account).
+    val snapshotIsActive =
+        activeAccountId != null &&
+            accountSnapshot.quotaAccountId == activeAccountId &&
+            (accountSnapshot.quotaRemaining != null || accountSnapshot.unlimited)
+    val quotaRemaining: Long?
+    val quotaMax: Long?
+    val quotaUnlimited: Boolean
+    val quotaFetchedAt: Long
+    val quotaIsEstimate: Boolean
+    if (snapshotIsActive) {
+        quotaRemaining = accountSnapshot.quotaRemaining
+        quotaMax = accountSnapshot.quotaMax
+        quotaUnlimited = accountSnapshot.unlimited
+        quotaFetchedAt = accountSnapshot.quotaFetchedAtEpochSeconds
+        quotaIsEstimate = false
+    } else if (activeAccount != null) {
+        val used = container.accountStore.getUsedBytes(activeAccount.id)
+        quotaIsEstimate = activeAccount.quotaRemaining == null
+        quotaRemaining = activeAccount.quotaRemaining
+            ?: (activeAccount.quotaMax - used).coerceAtLeast(0L)
+        quotaMax = activeAccount.quotaMax
+        quotaUnlimited = false
+        quotaFetchedAt = activeAccount.quotaFetchedAtEpochSeconds
+    } else {
+        quotaRemaining = null
+        quotaMax = null
+        quotaUnlimited = false
+        quotaFetchedAt = 0L
+        quotaIsEstimate = false
+    }
 
     val haptics = LocalHapticFeedback.current
     var detailsOpen by remember { mutableStateOf(false) }
@@ -225,6 +259,8 @@ fun HomeScreen(
             quotaRemaining = quotaRemaining,
             quotaMax = quotaMax,
             quotaUnlimited = quotaUnlimited,
+            quotaFetchedAtEpochSeconds = quotaFetchedAt,
+            quotaIsEstimate = quotaIsEstimate,
             selectedProxy = selectedProxy,
             pingMs = pingMs,
             detailsOpen = detailsOpen,
@@ -269,6 +305,10 @@ private data class HomeContentData(
     val quotaRemaining: Long?,
     val quotaMax: Long?,
     val quotaUnlimited: Boolean,
+    /** When the shown quota was fetched from the server (0 = never). */
+    val quotaFetchedAtEpochSeconds: Long = 0L,
+    /** True when the value is this device's usage estimate, not the server's. */
+    val quotaIsEstimate: Boolean = false,
     val selectedProxy: ProxyCandidate?,
     val pingMs: Int,
     val detailsOpen: Boolean,
@@ -1231,6 +1271,25 @@ private fun QuotaRow(data: HomeContentData, callbacks: HomeCallbacks) {
                 color = cs.primary,
                 trackColor = cs.surfaceContainerHighest,
             )
+            // Freshness/source caption: a server value carries its
+            // fetch time; the device estimate names itself. A value is
+            // never shown without one of the two when it is not fresh.
+            val caption = when {
+                data.quotaFetchedAtEpochSeconds > 0L ->
+                    s("Updated ") +
+                        java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                            .format(java.util.Date(data.quotaFetchedAtEpochSeconds * 1000))
+                data.quotaIsEstimate -> s("On this device")
+                else -> null
+            }
+            if (caption != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    caption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                )
+            }
         }
     }
 }

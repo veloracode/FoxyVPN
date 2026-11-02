@@ -25,6 +25,11 @@ fun Request.Builder.applyFirefoxHeaders(): Request.Builder = FirefoxAccountHeade
 class SimpleCookieJar : CookieJar {
     private val cookies = mutableListOf<Cookie>()
 
+    private companion object {
+        /** FxA account hosts: accounts.firefox.com and its subdomains. */
+        const val ACCOUNT_COOKIE_DOMAIN = "accounts.firefox.com"
+    }
+
     @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         for (cookie in cookies) {
@@ -49,6 +54,18 @@ class SimpleCookieJar : CookieJar {
     @Synchronized
     fun clear() {
         cookies.clear()
+    }
+
+    /**
+     * Removes only the account-identity cookies (the FxA hosts), keeping
+     * everything else — notably any Fastly clearance cookies — alive.
+     * Used on account switches: the next account must not inherit the
+     * previous account's FxA web identity, but re-solving Fastly on
+     * every switch is a needless cost (review decision 2026-11-02).
+     */
+    @Synchronized
+    fun clearAccountScoped() {
+        cookies.removeAll { it.domain.endsWith(ACCOUNT_COOKIE_DOMAIN) }
     }
 
     @Synchronized

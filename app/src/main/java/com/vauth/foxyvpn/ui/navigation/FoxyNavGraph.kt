@@ -53,20 +53,27 @@ fun FoxyNavGraph(
     val sessionScope = rememberCoroutineScope()
     var signingOut by remember { mutableStateOf(false) }
 
-    // Fork addition: after any successful sign-in (browser, legacy, or a
+    // Fork addition: after any successful sign-in (browser flow or a
     // restored session), register the session in the account list with
-    // its real email. Fire-and-forget: it never blocks navigation, and
-    // startup reconciliation covers the case where the lookup fails.
+    // its real identity (email + FxA uid). Fire-and-forget: it never
+    // blocks navigation, and startup reconciliation covers the case
+    // where the lookup fails. The FxA web state is cleared afterwards:
+    // the WebView must never hold a live FxA session at rest, or a
+    // later browser sign-in would silently re-authenticate the same
+    // account (the app session lives in the TokenStore, not in WebView
+    // state, so this cannot disturb it).
     fun captureSignedInAccount() {
         sessionScope.launch {
             runCatching {
-                val email = container.authRepository.profileEmailForCurrentSession()
+                val identity = container.authRepository.profileIdentityForCurrentSession()
+                val email = identity.email
                 if (!email.isNullOrBlank()) {
                     withContext(Dispatchers.IO) {
-                        container.accountRepository.captureActiveSession(email)
+                        container.accountRepository.captureActiveSession(email, identity.uid)
                     }
                 }
             }
+            com.vauth.foxyvpn.ui.screens.clearFxAWebState()
         }
     }
     NavHost(navController = navController, startDestination = FoxyRoutes.SPLASH) {
@@ -107,6 +114,8 @@ fun FoxyNavGraph(
                             guardianClient = container.guardianClient,
                             authRepository = container.authRepository,
                             connectivity = context.getSystemService(ConnectivityManager::class.java),
+                            accountStore = container.accountStore,
+                            accountRepository = container.accountRepository,
                         )
                 )
             HomeScreen(
@@ -269,8 +278,6 @@ fun FoxyNavGraph(
             AddAccountScreen(
                 authRepository = container.authRepository,
                 accountRepository = container.accountRepository,
-                accountStore = container.accountStore,
-                onDisconnect = onDisconnect,
                 onFinished = { message ->
                     navController.popBackStack()
                     android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG)

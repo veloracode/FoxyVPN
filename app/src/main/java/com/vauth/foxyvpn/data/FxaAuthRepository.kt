@@ -91,8 +91,11 @@ class FxaAuthRepository(
     // through the same browser sign-in as the first one.)
     // ==================================================================
 
-    /** The signed-in account's email from the OAuth profile endpoint, or null. */
-    private suspend fun fetchProfileEmail(accessToken: String): String? =
+    /** Identity of an FxA session from the profile endpoint. */
+    data class ProfileIdentity(val email: String?, val uid: String?)
+
+    /** The signed-in account's identity from the OAuth profile endpoint. */
+    private suspend fun fetchProfileIdentity(accessToken: String): ProfileIdentity =
         withContext(Dispatchers.IO) {
             runCatching {
                 val request = Request.Builder()
@@ -102,19 +105,40 @@ class FxaAuthRepository(
                     .get()
                     .build()
                 ControlPlaneHttp.client.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) return@use null
+                    if (!resp.isSuccessful) return@use ProfileIdentity(null, null)
                     val text = resp.body?.string().orEmpty()
-                    if (text.isEmpty()) null
-                    else JSONObject(text).optString("email").ifBlank { null }
+                    if (text.isEmpty()) ProfileIdentity(null, null)
+                    else {
+                        val json = JSONObject(text)
+                        ProfileIdentity(
+                            email = json.optString("email").ifBlank { null },
+                            uid = json.optString("uid").ifBlank { null },
+                        )
+                    }
                 }
-            }.getOrNull()
+            }.getOrElse { ProfileIdentity(null, null) }
         }
 
-    /** Profile email of the session currently in the TokenStore, if resolvable. */
-    suspend fun profileEmailForCurrentSession(): String? {
-        val auth = tokenStore.loadAuth() ?: return null
-        return fetchProfileEmail(auth.accessToken)
+    /** Identity of the session currently in the TokenStore, if resolvable. */
+    suspend fun profileIdentityForCurrentSession(): ProfileIdentity {
+        val auth = tokenStore.loadAuth() ?: return ProfileIdentity(null, null)
+        return fetchProfileIdentity(auth.accessToken)
     }
+
+    /** Identity of an arbitrary (detached) session; touches no store. */
+    suspend fun profileIdentityForAuth(auth: RuntimeAuth): ProfileIdentity =
+        fetchProfileIdentity(auth.accessToken)
+
+    /**
+     * A change-detection key for the CURRENT TokenStore session (its
+     * refresh token, falling back to the access token; null when
+     * signed out). Callers that start work for the current account
+     * capture this and re-check before publishing results, so a
+     * response that lands after an account switch is dropped instead
+     * of being attributed to the wrong account.
+     */
+    fun sessionLineage(): String? =
+        tokenStore.loadAuth()?.let { it.refreshToken ?: it.accessToken }
 
     // ------------------------------------------------------------------
     // Per-account token refresh: the same grant as upstream's session
@@ -212,15 +236,8 @@ class FxaAuthRepository(
             runCatching {
                     loginMutex.withLock {
                         check(tokenStore.sessionEpoch == epoch) { "Sign-in was superseded" }
-                        val ttl =
-                            if (expiresInSeconds > 0) expiresInSeconds
-                            else DEFAULT_ACCESS_TOKEN_TTL_SECONDS.toLong()
                         tokenStore.completeLoginIfCurrent(
-                            RuntimeAuth(
-                                accessToken = accessToken.trim(),
-                                refreshToken = refreshToken?.trim()?.ifBlank { null },
-                                expiresAtEpochSeconds = System.currentTimeMillis() / 1000 + ttl,
-                            ),
+                            detachedAuthWithTokens(accessToken, refreshToken, expiresInSeconds),
                             epoch,
                         )
                         Unit
@@ -389,17 +406,50 @@ class FxaAuthRepository(
     }
 
     private suspend fun completeLogin(sessionToken: String, epoch: Long) {
-        val tokenData = oauthToken(sessionToken)
+        val auth = exchangeBrowserSessionToken(sessionToken)
         coroutineContext.ensureActive()
-        tokenStore.completeLoginIfCurrent(
-            RuntimeAuth(
-                accessToken =
-                    tokenData.optString("access_token").takeIf { it.isNotBlank() }
-                        ?: error("Firefox Accounts returned no access token"),
-                refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
-                expiresAtEpochSeconds = expiryFrom(tokenData),
-            ),
-            epoch,
+        tokenStore.completeLoginIfCurrent(auth, epoch)
+    }
+
+    /**
+     * The session-token → OAuth exchange, DETACHED: returns the new
+     * session without touching the TokenStore. The add-account flow
+     * stores the result directly in the account list, so the active
+     * account's session is never replaced (review decision 2026-11-02:
+     * detached add-account replaces swap-and-restore).
+     */
+    suspend fun exchangeBrowserSessionToken(sessionToken: String): RuntimeAuth {
+        val clean = sessionToken.trim().replace(Regex("[\\s\\\"]"), "").lowercase()
+        require(Regex("^[0-9a-f]{64}$").matches(clean)) {
+            "The sign-in page did not hand over a usable session token"
+        }
+        val tokenData = oauthToken(clean)
+        return RuntimeAuth(
+            accessToken =
+                tokenData.optString("access_token").takeIf { it.isNotBlank() }
+                    ?: error("Firefox Accounts returned no access token"),
+            refreshToken = tokenData.optString("refresh_token", "").ifBlank { null },
+            expiresAtEpochSeconds = expiryFrom(tokenData),
+        )
+    }
+
+    /**
+     * Builds the session for the WebChannel tokens path, DETACHED (see
+     * [exchangeBrowserSessionToken]): same construction as the
+     * TokenStore-writing completion, minus the write.
+     */
+    fun detachedAuthWithTokens(
+        accessToken: String,
+        refreshToken: String?,
+        expiresInSeconds: Long,
+    ): RuntimeAuth {
+        val ttl =
+            if (expiresInSeconds > 0) expiresInSeconds
+            else DEFAULT_ACCESS_TOKEN_TTL_SECONDS.toLong()
+        return RuntimeAuth(
+            accessToken = accessToken.trim(),
+            refreshToken = refreshToken?.trim()?.ifBlank { null },
+            expiresAtEpochSeconds = System.currentTimeMillis() / 1000 + ttl,
         )
     }
 
