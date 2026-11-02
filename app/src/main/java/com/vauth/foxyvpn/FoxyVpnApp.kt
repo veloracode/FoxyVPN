@@ -10,6 +10,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import com.vauth.foxyvpn.data.AccountRepository
 import com.vauth.foxyvpn.data.AccountStore
+import com.vauth.foxyvpn.data.AppLogger
 import com.vauth.foxyvpn.data.ControlPlaneHttp
 import com.vauth.foxyvpn.data.CrashReporter
 import com.vauth.foxyvpn.data.FxaAuthRepository
@@ -18,6 +19,7 @@ import com.vauth.foxyvpn.data.ProxyStateStore
 import com.vauth.foxyvpn.data.ServerListClient
 import com.vauth.foxyvpn.data.SettingsStore
 import com.vauth.foxyvpn.data.TokenStore
+import com.vauth.foxyvpn.data.UpgradeSanitizer
 import com.vauth.foxyvpn.update.AppUpdater
 import com.vauth.foxyvpn.vpn.FoxyVpnService
 import com.vauth.foxyvpn.widget.QuickConnectWidgetProvider
@@ -60,6 +62,15 @@ class FoxyVpnApp : Application(), AppContainer {
         CrashReporter.install(this)
         CrashReporter.replayLastCrashIfAny(this)
 
+        // D1: one-time upgrade sanitization of persisted settings. MUST stay
+        // the first thing that touches settings: before SettingsStore exists,
+        // before the control-plane hooks can read the anti-block trio, and
+        // before any service/connect can run (Application.onCreate precedes
+        // every component in this process). A failure here must never block
+        // startup — it is logged and retried on the next start.
+        runCatching { UpgradeSanitizer.runOnce(this) }
+            .onFailure { AppLogger.w("FoxyVpnApp", "upgrade sanitization failed", it) }
+
         appUpdater = AppUpdater(this)
         tokenStore = TokenStore(this)
         proxyStateStore = ProxyStateStore(this)
@@ -67,6 +78,9 @@ class FoxyVpnApp : Application(), AppContainer {
         guardianClient = GuardianClient()
         serverListClient = ServerListClient(this)
         accountStore = AccountStore(this)
+        // D2: unattributed quota writes (the byte-identical VPN service) are
+        // stamped with the account that is active when they land.
+        settingsStore.activeAccountIdProvider = { accountStore.activeAccountIdFlow.value }
         authRepository = FxaAuthRepository(tokenStore)
         accountRepository = AccountRepository(accountStore, tokenStore)
         accountRepository.migrateAndReconcile()
