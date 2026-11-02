@@ -11,6 +11,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.vauth.foxyvpn.data.AppLogger
 import com.vauth.foxyvpn.data.FxaAuthRepository
+import com.vauth.foxyvpn.data.isPlaceholderEmail
 import com.vauth.foxyvpn.data.GUARDIAN_ENDPOINT_DEFAULT
 import com.vauth.foxyvpn.data.GuardianClient
 import com.vauth.foxyvpn.data.SettingsStore
@@ -78,19 +79,50 @@ class HomeViewModel(
             }
     }
 
+    private var lastIdentityAttemptAtMs = 0L
+
     fun refreshAccount() {
         viewModelScope.launch {
             try {
+                val store = accountStore
+                val repo = accountRepository
+                // Self-heal (offline, idempotent): if the live session somehow
+                // has no active entry, register it BEFORE attributing quota.
+                if (repo != null && store != null && store.activeAccountIdFlow.value == null) {
+                    withContext(Dispatchers.IO) { repo.registerLiveSession() }
+                }
                 val token = authRepository.currentAccessToken() ?: return@launch
-                // Generation tagging (review decision 2026-11-02): the
-                // account + session lineage at request start; a
-                // response that lands after a switch is dropped, never
-                // attributed to the newly active account.
-                val accountIdAtStart = accountStore?.activeAccountIdFlow?.value
+                // Generation tagging: a TokenStore epoch (bumped by sign-in,
+                // sign-out and account switch) + the session lineage at request
+                // start; a response that lands after any of those is dropped.
+                val epochAtStart = authRepository.currentSessionEpoch()
                 val lineageAtStart = authRepository.sessionLineage()
                 val info = guardianClient.fetchUserInfo(GUARDIAN_ENDPOINT_DEFAULT, token)
-                if (accountStore?.activeAccountIdFlow?.value != accountIdAtStart) return@launch
+                if (authRepository.currentSessionEpoch() != epochAtStart) return@launch
                 if (authRepository.sessionLineage() != lineageAtStart) return@launch
+
+                // Resolve the real identity BEFORE attributing, so the stamp names
+                // the entry that survives a placeholder fold. Throttled: a
+                // persistent 406 must not turn every refresh into a retry storm.
+                if (repo != null && store != null) {
+                    val entry = store.activeAccount()
+                    val nowMs = System.currentTimeMillis()
+                    if (entry != null &&
+                        (entry.uid == null || isPlaceholderEmail(entry.email)) &&
+                        nowMs - lastIdentityAttemptAtMs > IDENTITY_RETRY_INTERVAL_MS
+                    ) {
+                        lastIdentityAttemptAtMs = nowMs
+                        val identity = authRepository.resolveCurrentIdentity(maxAttempts = 2)
+                        if (identity != null) {
+                            withContext(Dispatchers.IO) {
+                                repo.registerLiveSession(identity.email, identity.uid, epochAtStart)
+                            }
+                        }
+                    }
+                }
+                if (authRepository.currentSessionEpoch() != epochAtStart) return@launch
+
+                val accountIdNow = store?.activeAccountIdFlow?.value
                 val hasKnownQuota = info.quotaRemaining != null || info.maxBytes != null
                 val isUnlimited = !info.limitedBandwidth && !hasKnownQuota
                 val nowSeconds = System.currentTimeMillis() / 1000
@@ -99,25 +131,17 @@ class HomeViewModel(
                         isUnlimited,
                         info.quotaRemaining,
                         info.maxBytes,
-                        accountIdAtStart,
+                        accountIdNow,
                         nowSeconds,
                     )
-                    // Per-account last-known values + identity backfill
-                    // ride the same verified-fresh call.
-                    val store = accountStore
-                    if (store != null && accountIdAtStart != null) {
-                        store.getAccount(accountIdAtStart)?.let { entry ->
+                    if (store != null && accountIdNow != null) {
+                        store.getAccount(accountIdNow)?.let { entry ->
                             store.updateAccount(
                                 entry.copy(
                                     quotaRemaining = info.quotaRemaining,
                                     quotaFetchedAtEpochSeconds = nowSeconds,
                                 )
                             )
-                        }
-                        val repo = accountRepository
-                        if (repo != null && store.getAccount(accountIdAtStart)?.uid == null) {
-                            val identity = authRepository.profileIdentityForCurrentSession()
-                            repo.backfillActiveIdentity(identity.email, identity.uid)
                         }
                     }
                 }
@@ -166,6 +190,8 @@ class HomeViewModel(
     }
 
     companion object {
+        private const val IDENTITY_RETRY_INTERVAL_MS = 5L * 60L * 1000L
+
         fun factory(
             settingsStore: SettingsStore,
             guardianClient: GuardianClient,

@@ -86,6 +86,10 @@ import com.vauth.foxyvpn.data.model.ProxyCandidate
 import com.vauth.foxyvpn.data.model.VpnAccount
 import com.vauth.foxyvpn.data.model.emojiFlag
 import com.vauth.foxyvpn.ui.HomeViewModel
+import com.vauth.foxyvpn.ui.QuotaCaption
+import com.vauth.foxyvpn.ui.formatQuotaAge
+import com.vauth.foxyvpn.ui.quotaCaption
+import com.vauth.foxyvpn.ui.resolveHomeQuota
 import com.vauth.foxyvpn.ui.theme.AppearanceController
 import com.vauth.foxyvpn.ui.theme.CardCornerStyle
 import com.vauth.foxyvpn.ui.theme.ListDensity
@@ -129,43 +133,23 @@ fun HomeScreen(
         if (state == ConnectionState.CONNECTED) homeModel.refreshAccount()
     }
     val activeAccount = accounts.firstOrNull { it.id == activeAccountId }
-    // Quota attribution (review decision 2026-11-02): the settings
-    // snapshot is used ONLY when it is stamped with the ACTIVE
-    // account's id — right after a switch it still holds the previous
-    // account's numbers until the refresh lands, and those must never
-    // render as the new account's. The bridge is the active entry's
-    // own last-known values (server remaining when known, else the
-    // Accounts screen's device-usage estimate for that same account).
-    val snapshotIsActive =
-        activeAccountId != null &&
-            accountSnapshot.quotaAccountId == activeAccountId &&
-            (accountSnapshot.quotaRemaining != null || accountSnapshot.unlimited)
-    val quotaRemaining: Long?
-    val quotaMax: Long?
-    val quotaUnlimited: Boolean
-    val quotaFetchedAt: Long
-    val quotaIsEstimate: Boolean
-    if (snapshotIsActive) {
-        quotaRemaining = accountSnapshot.quotaRemaining
-        quotaMax = accountSnapshot.quotaMax
-        quotaUnlimited = accountSnapshot.unlimited
-        quotaFetchedAt = accountSnapshot.quotaFetchedAtEpochSeconds
-        quotaIsEstimate = false
-    } else if (activeAccount != null) {
-        val used = container.accountStore.getUsedBytes(activeAccount.id)
-        quotaIsEstimate = activeAccount.quotaRemaining == null
-        quotaRemaining = activeAccount.quotaRemaining
-            ?: (activeAccount.quotaMax - used).coerceAtLeast(0L)
-        quotaMax = activeAccount.quotaMax
-        quotaUnlimited = false
-        quotaFetchedAt = activeAccount.quotaFetchedAtEpochSeconds
-    } else {
-        quotaRemaining = null
-        quotaMax = null
-        quotaUnlimited = false
-        quotaFetchedAt = 0L
-        quotaIsEstimate = false
-    }
+    // Upstream-style display: the settings snapshot is what the connect
+    // service and HomeViewModel maintain for the ACTIVE session, so it is shown
+    // unconditionally. The account stamp is only a refinement (it demotes the
+    // snapshot when it PROVES another existing account's numbers); it can never
+    // blank the row. See ui/HomeQuota.kt.
+    val resolvedQuota =
+        resolveHomeQuota(
+            snapshot = accountSnapshot,
+            activeAccount = activeAccount,
+            knownAccountIds = accounts.map { it.id }.toSet(),
+            usedBytesOfActive = activeAccount?.let { container.accountStore.getUsedBytes(it.id) } ?: 0L,
+        )
+    val quotaRemaining: Long? = resolvedQuota.remaining
+    val quotaMax: Long? = resolvedQuota.max
+    val quotaUnlimited: Boolean = resolvedQuota.unlimited
+    val quotaFetchedAt: Long = resolvedQuota.fetchedAtEpochSeconds
+    val quotaIsEstimate: Boolean = resolvedQuota.isEstimate
 
     val haptics = LocalHapticFeedback.current
     var detailsOpen by remember { mutableStateOf(false) }
@@ -1271,17 +1255,28 @@ private fun QuotaRow(data: HomeContentData, callbacks: HomeCallbacks) {
                 color = cs.primary,
                 trackColor = cs.surfaceContainerHighest,
             )
-            // Freshness/source caption: a server value carries its
-            // fetch time; the device estimate names itself. A value is
-            // never shown without one of the two when it is not fresh.
-            val caption = when {
-                data.quotaFetchedAtEpochSeconds > 0L ->
-                    s("Updated ") +
-                        java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
-                            .format(java.util.Date(data.quotaFetchedAtEpochSeconds * 1000))
-                data.quotaIsEstimate -> s("On this device")
-                else -> null
-            }
+            // Honest freshness caption: a fresh server value shows its fetch
+            // time, an OLD one shows its age, a value of unknown age says so,
+            // and the device estimate names itself.
+            val caption =
+                when (
+                    val c =
+                        quotaCaption(
+                            hasValue = remaining != null || max != null || data.quotaUnlimited,
+                            isEstimate = data.quotaIsEstimate,
+                            fetchedAtEpochSeconds = data.quotaFetchedAtEpochSeconds,
+                            nowEpochSeconds = System.currentTimeMillis() / 1000,
+                        )
+                ) {
+                    QuotaCaption.None -> null
+                    QuotaCaption.Estimate -> s("On this device")
+                    QuotaCaption.LastKnown -> s("Last known value")
+                    is QuotaCaption.UpdatedAt ->
+                        s("Updated ") +
+                            java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                                .format(java.util.Date(c.epochSeconds * 1000))
+                    is QuotaCaption.Stale -> s("Updated ") + formatQuotaAge(c.ageSeconds) + s(" ago")
+                }
             if (caption != null) {
                 Spacer(Modifier.height(4.dp))
                 Text(

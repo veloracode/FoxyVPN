@@ -59,6 +59,14 @@ class SettingsStore(context: Context) {
     private val mutableAccount = kotlinx.coroutines.flow.MutableStateFlow(accountSnapshot())
     val account: kotlinx.coroutines.flow.StateFlow<AccountSnapshot> = mutableAccount
 
+    /**
+     * Resolves the active account id for quota writes that do not know it
+     * (the byte-identical VPN service calls the 3-argument saveAccountQuota).
+     * Set once by FoxyVpnApp; null in unit tests / before wiring.
+     */
+    @Volatile
+    var activeAccountIdProvider: (() -> String?)? = null
+
     private val accountListener =
         android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (
@@ -333,22 +341,21 @@ class SettingsStore(context: Context) {
         } else if (unlimited) {
             editor.remove(KEY_CACHED_QUOTA_MAX)
         }
-        // Identity + freshness of the values above (review decision
-        // 2026-11-02): readers must be able to tell WHICH account a
-        // cached quota belongs to and how old it is, so one account's
-        // numbers are never shown for another after a switch. Only
-        // callers that KNOW the attribution pass it (HomeViewModel,
-        // after its generation check); other writers (the VPN service)
-        // pass null/0 and the existing stamp is preserved rather than
-        // cleared — the stamp is only ever SET by an attributed write,
-        // and a stale stamp makes readers fall back to per-account
-        // values, never to the wrong account's numbers.
-        if (accountId != null) {
-            editor.putString(KEY_CACHED_QUOTA_ACCOUNT_ID, accountId)
+        // Identity + freshness of the values above. EVERY caller writes a value
+        // it has just received from Guardian, so the fetch time is always "now"
+        // unless the caller supplies it. The account id is the caller's if it
+        // knows it (HomeViewModel, after its generation check), otherwise the
+        // account that is active right now (the VPN service only ever runs with
+        // the active session). The stamp is a REFINEMENT for readers — Home
+        // never refuses to show the values because of it.
+        val stampId = accountId ?: runCatching { activeAccountIdProvider?.invoke() }.getOrNull()
+        if (stampId != null) {
+            editor.putString(KEY_CACHED_QUOTA_ACCOUNT_ID, stampId)
         }
-        if (fetchedAtEpochSeconds > 0) {
-            editor.putLong(KEY_CACHED_QUOTA_FETCHED_AT, fetchedAtEpochSeconds)
-        }
+        editor.putLong(
+            KEY_CACHED_QUOTA_FETCHED_AT,
+            if (fetchedAtEpochSeconds > 0) fetchedAtEpochSeconds else System.currentTimeMillis() / 1000,
+        )
         editor.apply()
         mutableAccount.value = accountSnapshot()
     }
@@ -358,6 +365,19 @@ class SettingsStore(context: Context) {
             .edit()
             .remove(KEY_CACHED_REAL_IP)
             .remove(KEY_CACHED_REAL_COUNTRY)
+            .remove(KEY_CACHED_QUOTA_REMAINING)
+            .remove(KEY_CACHED_QUOTA_MAX)
+            .remove(KEY_CACHED_IS_UNLIMITED)
+            .remove(KEY_CACHED_QUOTA_ACCOUNT_ID)
+            .remove(KEY_CACHED_QUOTA_FETCHED_AT)
+            .apply()
+        mutableAccount.value = accountSnapshot()
+    }
+
+    /** Drops only the cached quota (+stamp); the cached real IP stays. */
+    fun clearAccountQuota() {
+        prefs
+            .edit()
             .remove(KEY_CACHED_QUOTA_REMAINING)
             .remove(KEY_CACHED_QUOTA_MAX)
             .remove(KEY_CACHED_IS_UNLIMITED)
