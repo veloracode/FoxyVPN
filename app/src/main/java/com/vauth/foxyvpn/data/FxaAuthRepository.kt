@@ -10,6 +10,8 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -55,6 +57,9 @@ private const val FIREFOX_CLIENT_ID = "5882386c6d801776"
 private const val OAUTH_SCOPE = "profile https://identity.mozilla.com/apps/vpn"
 private const val PROTOCOL_VERSION = "identity.mozilla.com/picl/v1/"
 private const val FXA_MAX_CHALLENGE_ATTEMPTS = 5
+private const val PROFILE_MAX_ATTEMPTS = 3
+private const val PROFILE_RETRY_BASE_MS = 1_500L
+private const val PROFILE_TIMEOUT_MS = 120_000L
 private const val DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 private const val WEBCHANNEL_LOGIN_URL =
@@ -94,40 +99,155 @@ class FxaAuthRepository(
     /** Identity of an FxA session from the profile endpoint. */
     data class ProfileIdentity(val email: String?, val uid: String?)
 
-    /** The signed-in account's identity from the OAuth profile endpoint. */
-    private suspend fun fetchProfileIdentity(accessToken: String): ProfileIdentity =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val request = Request.Builder()
-                    .url("$FXA_OAUTH_SERVER/profile")
-                    .applyFirefoxHeaders()
-                    .header("Authorization", "Bearer $accessToken")
-                    .get()
-                    .build()
-                ControlPlaneHttp.client.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) return@use ProfileIdentity(null, null)
-                    val text = resp.body?.string().orEmpty()
-                    if (text.isEmpty()) ProfileIdentity(null, null)
-                    else {
-                        val json = JSONObject(text)
-                        ProfileIdentity(
-                            email = json.optString("email").ifBlank { null },
-                            uid = json.optString("uid").ifBlank { null },
+    /**
+     * Change-detection epoch of the TokenStore session: bumped by sign-in,
+     * sign-out and account switch (NOT by a token refresh). Callers capture
+     * it before slow work and pass it back to AccountRepository.registerLiveSession.
+     */
+    fun currentSessionEpoch(): Long = tokenStore.sessionEpoch
+
+    /**
+     * GET twin of [executeFxaRequest]: same client, same Fastly 406
+     * challenge loop (solver + cookie sync), same error mapping. Used for the
+     * OAuth profile lookup, which previously was one raw, solver-less GET.
+     */
+    private suspend fun executeFxaGet(
+        baseUrl: String,
+        path: String,
+        bearerToken: String,
+    ): JSONObject =
+        withTimeout(PROFILE_TIMEOUT_MS) {
+            withContext(Dispatchers.IO) {
+                val url = "$baseUrl$path".toHttpUrl()
+                val origin = "${url.scheme}://${url.host}"
+
+                fun buildRequest(): Request =
+                    Request.Builder()
+                        .url(url)
+                        .applyFirefoxHeaders()
+                        .header("Authorization", "Bearer $bearerToken")
+                        .get()
+                        .build()
+
+                var response: Response = client.newCall(buildRequest()).awaitResponse()
+                var attempts = 1
+                while (response.code == 406 && attempts < FXA_MAX_CHALLENGE_ATTEMPTS) {
+                    val challengedBody = response.use { it.body?.readBoundedText().orEmpty() }
+                    try {
+                        ControlPlaneHttp.cookieJar.syncFromWebView()
+                        challengeSolver.solveAndInstall(
+                            challengedBody,
+                            origin,
+                            FirefoxAccountHeaders.userAgent,
                         )
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (solveFailure: Exception) {
+                        AppLogger.w(TAG, "could not solve the Fastly challenge", solveFailure)
+                        throw FastlyBlockedException(FRIENDLY_406_MESSAGE, solveFailure)
                     }
+                    response = client.newCall(buildRequest()).awaitResponse()
+                    attempts++
                 }
-            }.getOrElse { ProfileIdentity(null, null) }
+
+                response.use { resp ->
+                    val text = resp.body?.readBoundedText().orEmpty()
+                    if (resp.code >= 400) {
+                        if (resp.code == 406) throw FastlyBlockedException(FRIENDLY_406_MESSAGE)
+                        val errorBody =
+                            try {
+                                JSONObject(text)
+                            } catch (e: Exception) {
+                                JSONObject()
+                            }
+                        val errno = if (errorBody.has("errno")) errorBody.optInt("errno") else null
+                        val message =
+                            when {
+                                errorBody.length() > 0 ->
+                                    errorBody.optString("message", "HTTP ${resp.code}")
+                                text.isEmpty() -> "HTTP ${resp.code}"
+                                else -> text.take(200)
+                            }
+                        throw FxaApiError(message, errno, resp.code)
+                    }
+                    if (text.isEmpty()) JSONObject() else JSONObject(text)
+                }
+            }
         }
 
-    /** Identity of the session currently in the TokenStore, if resolvable. */
-    suspend fun profileIdentityForCurrentSession(): ProfileIdentity {
-        val auth = tokenStore.loadAuth() ?: return ProfileIdentity(null, null)
-        return fetchProfileIdentity(auth.accessToken)
+    private suspend fun fetchProfileOnce(accessToken: String): ProfileIdentity? {
+        val json = executeFxaGet(FXA_OAUTH_SERVER, "/profile", accessToken)
+        val email = json.optString("email").ifBlank { null }
+        val uid = json.optString("uid").ifBlank { null }
+        return if (email == null && uid == null) null else ProfileIdentity(email, uid)
     }
 
-    /** Identity of an arbitrary (detached) session; touches no store. */
+    /**
+     * Profile lookup with retry. Null = unresolved right now (never an
+     * exception, except real cancellation). A 401/403 triggers ONE forced
+     * token refresh through [refreshToken] when the caller can provide one;
+     * other 4xx (except 408/429) are final; transport errors, timeouts and an
+     * unsolved 406 are retried with a growing delay.
+     */
+    private suspend fun resolveIdentity(
+        initialToken: String,
+        refreshToken: (suspend () -> String?)?,
+        maxAttempts: Int,
+    ): ProfileIdentity? {
+        var token = initialToken
+        var refreshed = false
+        for (attempt in 1..maxAttempts) {
+            coroutineContext.ensureActive()
+            try {
+                fetchProfileOnce(token)?.let { return it }
+            } catch (timeout: TimeoutCancellationException) {
+                AppLogger.w(TAG, "profile lookup timed out (attempt $attempt of $maxAttempts)")
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (rejected: FxaApiError) {
+                val code = rejected.statusCode
+                if ((code == 401 || code == 403) && refreshToken != null && !refreshed) {
+                    refreshed = true
+                    token = refreshToken() ?: return null
+                    continue
+                }
+                if (code != null && code in 400..499 && code != 408 && code != 429) {
+                    AppLogger.w(TAG, "profile lookup refused (HTTP $code)")
+                    return null
+                }
+                AppLogger.w(TAG, "profile lookup failed (HTTP $code), attempt $attempt of $maxAttempts")
+            } catch (failure: Exception) {
+                AppLogger.w(TAG, "profile lookup failed, attempt $attempt of $maxAttempts", failure)
+            }
+            if (attempt < maxAttempts) delay(PROFILE_RETRY_BASE_MS * attempt)
+        }
+        return null
+    }
+
+    /**
+     * Identity of the CURRENT session via the refreshing (currentAccessToken),
+     * challenge-aware, retrying path. Null when it cannot be resolved now; a
+     * result is dropped (null) if the session changed while it was in flight.
+     */
+    suspend fun resolveCurrentIdentity(maxAttempts: Int = PROFILE_MAX_ATTEMPTS): ProfileIdentity? =
+        withContext(Dispatchers.IO) {
+            val epoch = tokenStore.sessionEpoch
+            val token = currentAccessToken() ?: return@withContext null
+            if (tokenStore.sessionEpoch != epoch) return@withContext null
+            val identity =
+                resolveIdentity(token, { refreshAccessToken()?.accessToken }, maxAttempts)
+            if (tokenStore.sessionEpoch != epoch) null else identity
+        }
+
+    /** Compatibility wrapper (HomeViewModel/NavGraph callers): never null. */
+    suspend fun profileIdentityForCurrentSession(): ProfileIdentity =
+        resolveCurrentIdentity(maxAttempts = 2) ?: ProfileIdentity(null, null)
+
+    /** Identity of a detached session (add-account); touches no store, no refresh. */
     suspend fun profileIdentityForAuth(auth: RuntimeAuth): ProfileIdentity =
-        fetchProfileIdentity(auth.accessToken)
+        withContext(Dispatchers.IO) {
+            resolveIdentity(auth.accessToken, null, PROFILE_MAX_ATTEMPTS)
+        } ?: ProfileIdentity(null, null)
 
     /**
      * A change-detection key for the CURRENT TokenStore session (its

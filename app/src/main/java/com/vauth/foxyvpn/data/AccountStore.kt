@@ -109,6 +109,37 @@ class AccountStore(context: Context) {
     }
 
     /**
+     * Atomic live-session registration (see AccountRepository.registerLiveSession).
+     * [entry] is upserted BY ID — never by email, so a placeholder identity can
+     * never evict a real entry — and becomes the active account; [removeIds]
+     * (placeholder duplicates of the same live session) are dropped, their
+     * device-usage counters folded into [entry]. One persisted list write, then
+     * the active marker. Crash-safe: a crash between the two leaves an entry
+     * whose auth equals the live session, which the next planLiveSession pass
+     * simply marks active (and folds/removes any duplicate).
+     */
+    @Synchronized
+    fun commitRegistration(entry: VpnAccount, removeIds: List<String>) {
+        val current = _accountsFlow.value
+        val withEntry =
+            if (current.any { it.id == entry.id }) {
+                current.map { if (it.id == entry.id) entry else it }
+            } else {
+                current + entry
+            }
+        val removable = removeIds.filter { it != entry.id }
+        val next = withEntry.filterNot { it.id in removable }
+        saveAccounts(next)
+        if (getAccount(entry.id) == null) return // persist/encode failed; change nothing else
+        for (id in removable) {
+            val used = getUsedBytes(id)
+            if (used > 0L) addUsedBytes(entry.id, used)
+            resetUsedBytes(id)
+        }
+        if (_activeAccountIdFlow.value != entry.id) setActiveAccountId(entry.id)
+    }
+
+    /**
      * The explicit global sign-out: every stored account, the active
      * marker and all usage counters go. Mirrors the v1 fork's clearAll
      * semantics — per-account removal is removeAccount.

@@ -14,6 +14,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.vauth.foxyvpn.AppContainer
+import com.vauth.foxyvpn.data.AppLogger
 import com.vauth.foxyvpn.ui.HomeViewModel
 import com.vauth.foxyvpn.ui.ServerListViewModel
 import com.vauth.foxyvpn.ui.screens.AccountScreen
@@ -54,26 +55,47 @@ fun FoxyNavGraph(
     var signingOut by remember { mutableStateOf(false) }
 
     // Fork addition: after any successful sign-in (browser flow or a
-    // restored session), register the session in the account list with
-    // its real identity (email + FxA uid). Fire-and-forget: it never
-    // blocks navigation, and startup reconciliation covers the case
-    // where the lookup fails. The FxA web state is cleared afterwards:
-    // the WebView must never hold a live FxA session at rest, or a
-    // later browser sign-in would silently re-authenticate the same
-    // account (the app session lives in the TokenStore, not in WebView
-    // state, so this cannot disturb it).
-    fun captureSignedInAccount() {
+    // restored session) the LIVE session is registered in the account list.
+    //  Step 1 is OFFLINE and unconditional (create-or-match, placeholder
+    //  identity if nothing is known) — it does not depend on any network
+    //  call, so a 406-prone network can no longer leave the signed-in
+    //  account unregistered. Navigation waits for it (a few ms of disk I/O)
+    //  so Home's very first composition already has an active account.
+    //  Step 2 resolves the real identity (refreshing, challenge-aware,
+    //  retrying) and backfills email/uid; failure leaves the placeholder.
+    // The FxA web state is cleared afterwards: the WebView must never hold a
+    // live FxA session at rest (the app session lives in the TokenStore).
+    fun registerSignedInAccount(thenNavigate: () -> Unit) {
         sessionScope.launch {
-            runCatching {
-                val identity = container.authRepository.profileIdentityForCurrentSession()
-                val email = identity.email
-                if (!email.isNullOrBlank()) {
-                    withContext(Dispatchers.IO) {
-                        container.accountRepository.captureActiveSession(email, identity.uid)
-                    }
+            try {
+                try {
+                    withContext(Dispatchers.IO) { container.accountRepository.registerLiveSession() }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    AppLogger.w("FoxyNavGraph", "live-session registration failed", error)
                 }
+                thenNavigate()
+                try {
+                    val epoch = container.authRepository.currentSessionEpoch()
+                    val identity = container.authRepository.resolveCurrentIdentity()
+                    if (identity != null) {
+                        withContext(Dispatchers.IO) {
+                            container.accountRepository.registerLiveSession(
+                                identity.email,
+                                identity.uid,
+                                epoch,
+                            )
+                        }
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    AppLogger.w("FoxyNavGraph", "identity backfill failed", error)
+                }
+            } finally {
+                com.vauth.foxyvpn.ui.screens.clearFxAWebState()
             }
-            com.vauth.foxyvpn.ui.screens.clearFxAWebState()
         }
     }
     NavHost(navController = navController, startDestination = FoxyRoutes.SPLASH) {
@@ -81,9 +103,10 @@ fun FoxyNavGraph(
             SplashScreen(
                 authRepository = container.authRepository,
                 onSignedIn = {
-                    captureSignedInAccount()
-                    navController.navigate(FoxyRoutes.HOME) {
-                        popUpTo(FoxyRoutes.SPLASH) { inclusive = true }
+                    registerSignedInAccount {
+                        navController.navigate(FoxyRoutes.HOME) {
+                            popUpTo(FoxyRoutes.SPLASH) { inclusive = true }
+                        }
                     }
                 },
                 onNeedsLogin = {
@@ -97,9 +120,10 @@ fun FoxyNavGraph(
             LoginScreen(
                 authRepository = container.authRepository,
                 onSignedIn = {
-                    captureSignedInAccount()
-                    navController.navigate(FoxyRoutes.HOME) {
-                        popUpTo(FoxyRoutes.LOGIN) { inclusive = true }
+                    registerSignedInAccount {
+                        navController.navigate(FoxyRoutes.HOME) {
+                            popUpTo(FoxyRoutes.LOGIN) { inclusive = true }
+                        }
                     }
                 },
                 onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
@@ -214,7 +238,15 @@ fun FoxyNavGraph(
                     sessionScope.launch {
                         val switched =
                             withContext(Dispatchers.IO) {
-                                container.accountRepository.switchTo(account.id)
+                                val before = container.accountStore.activeAccountIdFlow.value
+                                container.accountRepository.switchTo(account.id).also { ok ->
+                                    // The snapshot still holds the OUTGOING account's
+                                    // numbers; drop them so they can never render as
+                                    // the new account's before its refresh lands.
+                                    if (ok && before != account.id) {
+                                        container.settingsStore.clearAccountQuota()
+                                    }
+                                }
                             }
                         if (switched) {
                             navController.navigate(FoxyRoutes.HOME) {
