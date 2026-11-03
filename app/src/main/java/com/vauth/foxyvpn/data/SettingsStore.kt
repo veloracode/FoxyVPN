@@ -118,7 +118,7 @@ class SettingsStore(context: Context) {
     var appDesign: AppDesign
         get() = AppDesign.entries.firstOrNull {
             it.name == prefs.getString(KEY_APP_DESIGN, null)
-        } ?: AppDesign.PIXEL
+        } ?: AppDesign.BENTO
         set(value) { prefs.edit().putString(KEY_APP_DESIGN, value.name).apply() }
 
     // ------------------------------------------------------------------
@@ -255,6 +255,211 @@ class SettingsStore(context: Context) {
     var exitCheckEnabled: Boolean
         get() = prefs.getBoolean(KEY_EXIT_CHECK, true)
         set(value) { prefs.edit().putBoolean(KEY_EXIT_CHECK, value).apply() }
+
+    // ------------------------------------------------------------------
+    // Overhaul (Zed) appearance model — Phase B1. Every getter is a total
+    // decode (unknown/corrupt stored value -> the Zed default); defaults
+    // match ZedSecure v3.1.8's AppSettings/BentoPrefs defaults exactly.
+    // ------------------------------------------------------------------
+
+    /** Separate from [themeMode] since the overhaul: Zed's amoledBlack axis. */
+    var amoledBlack: Boolean
+        get() = prefs.getBoolean(KEY_AMOLED_BLACK, false)
+        set(value) { prefs.edit().putBoolean(KEY_AMOLED_BLACK, value).apply() }
+
+    var groupAllDisplay: Boolean
+        get() = prefs.getBoolean(KEY_GROUP_ALL_DISPLAY, true)
+        set(value) { prefs.edit().putBoolean(KEY_GROUP_ALL_DISPLAY, value).apply() }
+
+    var uiFont: com.vauth.foxyvpn.ui.theme.UiFont
+        get() = com.vauth.foxyvpn.ui.theme.UiFont.entries.firstOrNull {
+            it.name == prefs.getString(KEY_UI_FONT, null)
+        } ?: com.vauth.foxyvpn.ui.theme.UiFont.Auto
+        set(value) { prefs.edit().putString(KEY_UI_FONT, value.name).apply() }
+
+    /** Whole-UI density scale, Zed's UiScale clamp [0.5, 2.0], default 1.0. */
+    var uiScale: Float
+        get() = prefs.getFloat(KEY_UI_SCALE, 1.0f).coerceIn(0.5f, 2.0f)
+        set(value) { prefs.edit().putFloat(KEY_UI_SCALE, value.coerceIn(0.5f, 2.0f)).apply() }
+
+    var showTrafficTiles: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_TRAFFIC_TILES, true)
+        set(value) { prefs.edit().putBoolean(KEY_SHOW_TRAFFIC_TILES, value).apply() }
+
+    var trafficTilesAboveHero: Boolean
+        get() = prefs.getBoolean(KEY_TRAFFIC_TILES_ABOVE_HERO, false)
+        set(value) { prefs.edit().putBoolean(KEY_TRAFFIC_TILES_ABOVE_HERO, value).apply() }
+
+    var trafficCardStyle: com.vauth.foxyvpn.ui.theme.TrafficCardStyle
+        get() = com.vauth.foxyvpn.ui.theme.TrafficCardStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_TRAFFIC_CARD_STYLE, null)
+        } ?: com.vauth.foxyvpn.ui.theme.TrafficCardStyle.Cards
+        set(value) { prefs.edit().putString(KEY_TRAFFIC_CARD_STYLE, value.name).apply() }
+
+    var trafficTileSize: com.vauth.foxyvpn.ui.theme.TrafficTileSize
+        get() = com.vauth.foxyvpn.ui.theme.TrafficTileSize.entries.firstOrNull {
+            it.name == prefs.getString(KEY_TRAFFIC_TILE_SIZE, null)
+        } ?: com.vauth.foxyvpn.ui.theme.TrafficTileSize.Normal
+        set(value) { prefs.edit().putString(KEY_TRAFFIC_TILE_SIZE, value.name).apply() }
+
+    // Notification group (Interface §4.5) — read by FoxyVpnService (OQ-11).
+    var liveNotification: Boolean
+        get() = prefs.getBoolean(KEY_LIVE_NOTIFICATION, true)
+        set(value) { prefs.edit().putBoolean(KEY_LIVE_NOTIFICATION, value).apply() }
+
+    var notifChip: com.vauth.foxyvpn.ui.theme.NotifChip
+        get() = com.vauth.foxyvpn.ui.theme.NotifChip.entries.firstOrNull {
+            it.name == prefs.getString(KEY_NOTIF_CHIP, null)
+        } ?: com.vauth.foxyvpn.ui.theme.NotifChip.Speed
+        set(value) { prefs.edit().putString(KEY_NOTIF_CHIP, value.name).apply() }
+
+    var notifStyle: com.vauth.foxyvpn.ui.theme.NotifStyle
+        get() = com.vauth.foxyvpn.ui.theme.NotifStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_NOTIF_STYLE, null)
+        } ?: com.vauth.foxyvpn.ui.theme.NotifStyle.Bento
+        set(value) { prefs.edit().putString(KEY_NOTIF_STYLE, value.name).apply() }
+
+    var speedInNotification: Boolean
+        get() = prefs.getBoolean(KEY_SPEED_IN_NOTIFICATION, true)
+        set(value) { prefs.edit().putBoolean(KEY_SPEED_IN_NOTIFICATION, value).apply() }
+
+    // BentoPrefs (Zed's domain model, stored field by field).
+    var bentoPalette: com.vauth.foxyvpn.ui.theme.BentoPalette
+        get() = com.vauth.foxyvpn.ui.theme.BentoPalette.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_PALETTE, null)
+        } ?: com.vauth.foxyvpn.ui.theme.BentoPalette.Brand
+        set(value) { prefs.edit().putString(KEY_BENTO_PALETTE, value.name).apply() }
+
+    var bentoCorners: com.vauth.foxyvpn.ui.theme.BentoCorners
+        get() = com.vauth.foxyvpn.ui.theme.BentoCorners.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_CORNERS, null)
+        } ?: com.vauth.foxyvpn.ui.theme.BentoCorners.Leaf
+        set(value) { prefs.edit().putString(KEY_BENTO_CORNERS, value.name).apply() }
+
+    var bentoTitle: com.vauth.foxyvpn.ui.theme.BentoTitle
+        get() = com.vauth.foxyvpn.ui.theme.BentoTitle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_TITLE, null)
+        } ?: com.vauth.foxyvpn.ui.theme.BentoTitle.Large
+        set(value) { prefs.edit().putString(KEY_BENTO_TITLE, value.name).apply() }
+
+    var bentoDensity: com.vauth.foxyvpn.ui.theme.BentoDensity
+        get() = com.vauth.foxyvpn.ui.theme.BentoDensity.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_DENSITY, null)
+        } ?: com.vauth.foxyvpn.ui.theme.BentoDensity.Comfortable
+        set(value) { prefs.edit().putString(KEY_BENTO_DENSITY, value.name).apply() }
+
+    var bentoMotifs: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_MOTIFS, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_MOTIFS, value).apply() }
+
+    var bentoPlayfulTouch: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_PLAYFUL, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_PLAYFUL, value).apply() }
+
+    var bentoIndexes: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_INDEXES, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_INDEXES, value).apply() }
+
+    var bentoLiveTiles: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_LIVE_TILES, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_LIVE_TILES, value).apply() }
+
+    /** Settings-board layout string (Zed tile format: "key:size,...|hidden,..."). */
+    var bentoTiles: String
+        get() = prefs.getString(KEY_BENTO_TILES, null) ?: ""
+        set(value) { prefs.edit().putString(KEY_BENTO_TILES, value).apply() }
+
+    var bentoDockLabels: com.vauth.foxyvpn.ui.theme.BentoDockLabels
+        get() = com.vauth.foxyvpn.ui.theme.BentoDockLabels.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_DOCK_LABELS, null)
+        } ?: com.vauth.foxyvpn.ui.theme.BentoDockLabels.Active
+        set(value) { prefs.edit().putString(KEY_BENTO_DOCK_LABELS, value.name).apply() }
+
+    var bentoDockAutoHide: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_DOCK_AUTOHIDE, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_DOCK_AUTOHIDE, value).apply() }
+
+    var bentoNavStyle: NavBarStyle
+        get() = NavBarStyle.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_NAV_STYLE, null)
+        } ?: NavBarStyle.Dock
+        set(value) { prefs.edit().putString(KEY_BENTO_NAV_STYLE, value.name).apply() }
+
+    var bentoConnect: com.vauth.foxyvpn.ui.theme.BentoConnect
+        get() = com.vauth.foxyvpn.ui.theme.BentoConnect.entries.firstOrNull {
+            it.name == prefs.getString(KEY_BENTO_CONNECT, null)
+        } ?: com.vauth.foxyvpn.ui.theme.BentoConnect.Slide
+        set(value) { prefs.edit().putString(KEY_BENTO_CONNECT, value.name).apply() }
+
+    var bentoWave: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_WAVE, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_WAVE, value).apply() }
+
+    var bentoHomeSpeed: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_HOME_SPEED, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_HOME_SPEED, value).apply() }
+
+    var bentoHomeSession: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_HOME_SESSION, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_HOME_SESSION, value).apply() }
+
+    var bentoHomeQuick: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_HOME_QUICK, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_HOME_QUICK, value).apply() }
+
+    var bentoHomeChips: Boolean
+        get() = prefs.getBoolean(KEY_BENTO_HOME_CHIPS, true)
+        set(value) { prefs.edit().putBoolean(KEY_BENTO_HOME_CHIPS, value).apply() }
+
+    /** Bottom-bar destinations (ordered subset; Home/Settings always present). */
+    var navDestinations: String
+        get() = prefs.getString(KEY_NAV_DESTINATIONS, null) ?: ""
+        set(value) { prefs.edit().putString(KEY_NAV_DESTINATIONS, value).apply() }
+
+    // The five personalize colors whose surfaces arrive with the Zed Old
+    // design (Phase B2); stored now so theme profiles apply completely.
+    var customDownloadColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_DOWNLOAD_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_DOWNLOAD_COLOR, value).apply() }
+
+    var customUploadColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_UPLOAD_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_UPLOAD_COLOR, value).apply() }
+
+    var customDownloadTileColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_DOWNLOAD_TILE_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_DOWNLOAD_TILE_COLOR, value).apply() }
+
+    var customUploadTileColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_UPLOAD_TILE_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_UPLOAD_TILE_COLOR, value).apply() }
+
+    var customTapHintColor: Long
+        get() = prefs.getLong(KEY_CUSTOM_TAP_HINT_COLOR, UNSET_COLOR)
+        set(value) { prefs.edit().putLong(KEY_CUSTOM_TAP_HINT_COLOR, value).apply() }
+
+    /** The whole BentoPrefs model in one read (used by the theme + controller). */
+    val bentoPrefs: com.vauth.foxyvpn.ui.theme.BentoPrefs
+        get() = com.vauth.foxyvpn.ui.theme.BentoPrefs(
+            palette = bentoPalette,
+            corners = bentoCorners,
+            title = bentoTitle,
+            density = bentoDensity,
+            motifs = bentoMotifs,
+            playfulTouch = bentoPlayfulTouch,
+            indexes = bentoIndexes,
+            liveTiles = bentoLiveTiles,
+            tiles = bentoTiles,
+            dockLabels = bentoDockLabels,
+            dockAutoHide = bentoDockAutoHide,
+            navStyle = bentoNavStyle,
+            connect = bentoConnect,
+            wave = bentoWave,
+            homeSpeed = bentoHomeSpeed,
+            homeSession = bentoHomeSession,
+            homeQuick = bentoHomeQuick,
+            homeChips = bentoHomeChips,
+        )
 
     var latencyProbeUrl: String
         get() =
@@ -821,10 +1026,18 @@ class SettingsStore(context: Context) {
         val password: String,
     )
 
+    /**
+     * Home-screen design. OVERHAUL (Phase B1): the values are now ZedSecure's
+     * design axis. The pre-overhaul values (PIXEL/PORTAL/OLD of the v1 port)
+     * no longer exist here — [OverhaulMigration] rewrites any stored
+     * pre-overhaul value to BENTO before anything reads this (never
+     * name-mapped: the old PIXEL was a different design from Zed's Pixel).
+     * The getter stays total: an unknown stored value decodes to BENTO.
+     */
     enum class AppDesign(val label: String) {
+        BENTO(label = "Bento"),
         PIXEL(label = "Pixel"),
-        PORTAL(label = "Portal"),
-        OLD(label = "Classic"),
+        OLD(label = "Old"),
     }
 
     enum class TlsSplitMode(
@@ -886,6 +1099,42 @@ class SettingsStore(context: Context) {
         private const val KEY_HOME_AFTER_SELECT = "home_after_select"
         private const val KEY_DOUBLE_COLUMN_DISPLAY = "double_column_display"
         private const val KEY_EXIT_CHECK = "exit_check_enabled"
+        private const val KEY_AMOLED_BLACK = "amoled_black"
+        private const val KEY_GROUP_ALL_DISPLAY = "group_all_display"
+        private const val KEY_UI_FONT = "ui_font"
+        private const val KEY_UI_SCALE = "ui_scale"
+        private const val KEY_SHOW_TRAFFIC_TILES = "show_traffic_tiles"
+        private const val KEY_TRAFFIC_TILES_ABOVE_HERO = "traffic_tiles_above_hero"
+        private const val KEY_TRAFFIC_CARD_STYLE = "traffic_card_style"
+        private const val KEY_TRAFFIC_TILE_SIZE = "traffic_tile_size"
+        private const val KEY_LIVE_NOTIFICATION = "live_notification"
+        private const val KEY_NOTIF_CHIP = "notif_chip"
+        private const val KEY_NOTIF_STYLE = "notif_style"
+        private const val KEY_SPEED_IN_NOTIFICATION = "speed_in_notification"
+        private const val KEY_BENTO_PALETTE = "bento_palette"
+        private const val KEY_BENTO_CORNERS = "bento_corners"
+        private const val KEY_BENTO_TITLE = "bento_title"
+        private const val KEY_BENTO_DENSITY = "bento_density"
+        private const val KEY_BENTO_MOTIFS = "bento_motifs"
+        private const val KEY_BENTO_PLAYFUL = "bento_playful_touch"
+        private const val KEY_BENTO_INDEXES = "bento_indexes"
+        private const val KEY_BENTO_LIVE_TILES = "bento_live_tiles"
+        private const val KEY_BENTO_TILES = "bento_tiles"
+        private const val KEY_BENTO_DOCK_LABELS = "bento_dock_labels"
+        private const val KEY_BENTO_DOCK_AUTOHIDE = "bento_dock_autohide"
+        private const val KEY_BENTO_NAV_STYLE = "bento_nav_style"
+        private const val KEY_BENTO_CONNECT = "bento_connect"
+        private const val KEY_BENTO_WAVE = "bento_wave"
+        private const val KEY_BENTO_HOME_SPEED = "bento_home_speed"
+        private const val KEY_BENTO_HOME_SESSION = "bento_home_session"
+        private const val KEY_BENTO_HOME_QUICK = "bento_home_quick"
+        private const val KEY_BENTO_HOME_CHIPS = "bento_home_chips"
+        private const val KEY_NAV_DESTINATIONS = "nav_destinations"
+        private const val KEY_CUSTOM_DOWNLOAD_COLOR = "custom_download_color"
+        private const val KEY_CUSTOM_UPLOAD_COLOR = "custom_upload_color"
+        private const val KEY_CUSTOM_DOWNLOAD_TILE_COLOR = "custom_download_tile_color"
+        private const val KEY_CUSTOM_UPLOAD_TILE_COLOR = "custom_upload_tile_color"
+        private const val KEY_CUSTOM_TAP_HINT_COLOR = "custom_tap_hint_color"
         const val UNSET_COLOR: Long = Long.MIN_VALUE
         private const val KEY_TLS_SPLIT_MODE = "tls_split_mode"
         private const val KEY_API_PROXY_ENABLED = "api_proxy_enabled"

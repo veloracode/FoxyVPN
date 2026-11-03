@@ -15,6 +15,7 @@ import com.vauth.foxyvpn.data.ControlPlaneHttp
 import com.vauth.foxyvpn.data.CrashReporter
 import com.vauth.foxyvpn.data.FxaAuthRepository
 import com.vauth.foxyvpn.data.GuardianClient
+import com.vauth.foxyvpn.data.OverhaulMigration
 import com.vauth.foxyvpn.data.ProxyStateStore
 import com.vauth.foxyvpn.data.ServerListClient
 import com.vauth.foxyvpn.data.SettingsStore
@@ -70,6 +71,12 @@ class FoxyVpnApp : Application(), AppContainer {
         // startup — it is logged and retried on the next start.
         runCatching { UpgradeSanitizer.runOnce(this) }
             .onFailure { AppLogger.w("FoxyVpnApp", "upgrade sanitization failed", it) }
+
+        // Overhaul (Phase B1): migrate the appearance model (design axis
+        // -> Bento, AMOLED fold) after the sanitizer, still before
+        // SettingsStore exists. Same never-block-startup discipline.
+        runCatching { OverhaulMigration.runOnce(this) }
+            .onFailure { AppLogger.w("FoxyVpnApp", "ui overhaul migration failed", it) }
 
         appUpdater = AppUpdater(this)
         tokenStore = TokenStore(this)
