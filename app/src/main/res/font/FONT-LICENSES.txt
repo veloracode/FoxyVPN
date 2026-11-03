@@ -1,0 +1,30 @@
+Bundled fonts — all SIL Open Font License 1.1, fetched from their canonical
+open-source distributions for the ZedSecure-look overhaul (Phase B1). No font
+file was taken from the ZedSecure (AGPL) tree.
+
+Inter (regular/medium/semibold/bold) and Inter Display (semibold/bold)
+  Copyright 2016-2024 The Inter Project Authors
+  Source: https://github.com/rsms/inter (release v4.1)
+  License: SIL Open Font License 1.1
+
+Google Sans Flex (regular/medium/semibold/bold)
+  The open-source variable font by Google Fonts — NOT the proprietary
+  "Google Sans". ZedSecure's own NOTICE lists it as SIL OFL 1.1.
+  Source: https://github.com/googlefonts/googlesans-flex (OFL.txt),
+  static cuts served by Google Fonts (fonts.googleapis.com).
+  License: SIL Open Font License 1.1
+
+Estedad (regular/medium/semibold/bold)
+  Copyright 2020 Amin Abedi
+  Source: https://github.com/aminabedi68/Estedad
+  License: SIL Open Font License 1.1
+
+Vazirmatn (regular/medium/semibold/bold)
+  Copyright 2015-2024 Saber Rastikerdar
+  Source: https://github.com/rastikerdar/vazirmatn (release v33.003)
+  License: SIL Open Font License 1.1
+
+Nunito (regular/medium/semibold/bold)
+  Copyright 2014 The Nunito Project Authors
+  Source: https://github.com/googlefonts/nunito (served by Google Fonts)
+  License: SIL Open Font License 1.1
