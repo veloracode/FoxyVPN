@@ -126,12 +126,9 @@ fun MapScreen(container: AppContainer, onBack: () -> Unit) {
         }
     }
 
-    val exitLabel = when {
-        focusPoint != null && selectedNow != null ->
-            "${focusPoint.cityName}, ${selectedNow.displayName}"
-        selectedNow != null -> selectedNow.displayName
-        else -> "—"
-    }
+    val exitLabel = selectedNow?.let { sel ->
+        focusPoint?.let { fp -> "${fp.cityName}, ${sel.displayName}" } ?: sel.displayName
+    } ?: "—"
     val statusLabel = when {
         connected -> s("Connected")
         selectedNow != null -> s("Selected")

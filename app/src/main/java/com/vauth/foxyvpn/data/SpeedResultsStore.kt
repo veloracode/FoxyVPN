@@ -22,7 +22,7 @@ internal object SpeedResultsStore {
     fun save(context: Context, serverKey: String, entry: Entry) {
         val prefs = context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val root = runCatching { JSONObject(prefs.getString(KEY_RESULTS, "{}")) }
+        val root = runCatching { JSONObject(prefs.getString(KEY_RESULTS, "{}") ?: "{}") }
             .getOrDefault(JSONObject())
         root.put(
             serverKey,
@@ -39,7 +39,7 @@ internal object SpeedResultsStore {
     fun load(context: Context, serverKey: String, nowMs: Long = System.currentTimeMillis()): Entry? {
         val prefs = context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val root = runCatching { JSONObject(prefs.getString(KEY_RESULTS, "{}")) }.getOrNull()
+        val root = runCatching { JSONObject(prefs.getString(KEY_RESULTS, "{}") ?: "{}") }.getOrNull()
             ?: return null
         val item = root.optJSONObject(serverKey) ?: return null
         val at = item.optLong("at", 0L)
