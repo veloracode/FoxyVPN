@@ -21,6 +21,7 @@ import com.vauth.foxyvpn.BuildConfig
 import com.vauth.foxyvpn.FoxyVpnApp
 import com.vauth.foxyvpn.MainActivity
 import com.vauth.foxyvpn.data.AppLogger
+import com.vauth.foxyvpn.data.model.displayName
 import com.vauth.foxyvpn.data.ControlPlaneHttp
 import com.vauth.foxyvpn.data.FxaRefreshFailure
 import com.vauth.foxyvpn.data.GUARDIAN_ENDPOINT_DEFAULT
@@ -1201,12 +1202,50 @@ class FoxyVpnService : VpnService() {
                             _vpnLiveStats.value = stats
                             updateNotification(
                                 statusLabel,
-                                "\u2193 ${formatBytesPerSecond(stats.rxRateBytesPerSec)}  \u2191 ${formatBytesPerSecond(stats.txRateBytesPerSec)}",
+                                notificationSubText(stats),
                             )
                         }
                     }
                 }
                 .also { it.start() }
+    }
+
+    /**
+     * The live line under the notification title — Phase B1 of the
+     * Zed overhaul (OQ-11 hook). Driven by the Interface page's
+     * notification prefs: liveNotification off → no live line at
+     * all; notifChip picks the content (Speed honours
+     * speedInNotification); ConfigName shows the connected server,
+     * Duration the elapsed time, Total the session bytes.
+     */
+    private fun notificationSubText(stats: VpnLiveStats): String? {
+        val store = (applicationContext as? FoxyVpnApp)?.settingsStore ?: return null
+        if (!store.liveNotification) return null
+        return when (store.notifChip) {
+            com.vauth.foxyvpn.ui.theme.NotifChip.Speed ->
+                if (store.speedInNotification) {
+                    "\u2193 ${formatBytesPerSecond(stats.rxRateBytesPerSec)}  \u2191 ${formatBytesPerSecond(stats.txRateBytesPerSec)}"
+                } else {
+                    null
+                }
+            com.vauth.foxyvpn.ui.theme.NotifChip.ConfigName ->
+                connectionCandidate?.displayName
+            com.vauth.foxyvpn.ui.theme.NotifChip.Duration -> {
+                val started = _connectedAtElapsedMs.value
+                if (started == null) {
+                    null
+                } else {
+                    val seconds = ((SystemClock.elapsedRealtime() - started) / 1000).coerceAtLeast(0)
+                    val h = seconds / 3600
+                    val m = (seconds % 3600) / 60
+                    val sec = seconds % 60
+                    if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%02d:%02d".format(m, sec)
+                }
+            }
+            com.vauth.foxyvpn.ui.theme.NotifChip.Total ->
+                com.vauth.foxyvpn.data.formatBytes(stats.sessionBytes)
+            com.vauth.foxyvpn.ui.theme.NotifChip.None -> null
+        }
     }
 
     private fun buildNotification(text: String, subText: String? = null): Notification {
@@ -1241,7 +1280,17 @@ class FoxyVpnService : VpnService() {
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
 
-        if (subText != null) {
+        // Overhaul (B1): the Bento notification style tints the icon
+        // with the palette lime and expands the live line as big
+        // text; the System style keeps the plain v1 rendering.
+        val notifStyle =
+            (applicationContext as? FoxyVpnApp)?.settingsStore?.notifStyle
+        if (notifStyle == com.vauth.foxyvpn.ui.theme.NotifStyle.Bento) {
+            builder.setColor(0xFFC7F24E.toInt())
+            if (subText != null) {
+                builder.setStyle(NotificationCompat.BigTextStyle().bigText(subText))
+            }
+        } else if (subText != null) {
             builder.setSubText(subText)
         }
         return builder.build()
