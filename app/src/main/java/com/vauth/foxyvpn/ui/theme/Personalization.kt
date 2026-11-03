@@ -5,7 +5,10 @@ import com.vauth.foxyvpn.data.SettingsStore
 
 /**
  * Per-surface personalization resolved from [SettingsStore]. Null = use the
- * color scheme default.
+ * color scheme default. OVERHAUL (Phase B1): the model now carries all
+ * eleven personalize colors (the v1 port stored six; the traffic-tile and
+ * tap-hint colors join so theme profiles apply completely — their surfaces
+ * are the Zed Old design's, Phase B2).
  */
 data class Personalization(
     val connectColor: Color? = null,
@@ -14,6 +17,11 @@ data class Personalization(
     val serverActiveColor: Color? = null,
     val configCardColor: Color? = null,
     val configCardTextColor: Color? = null,
+    val downloadColor: Color? = null,
+    val uploadColor: Color? = null,
+    val downloadTileColor: Color? = null,
+    val uploadTileColor: Color? = null,
+    val tapHintColor: Color? = null,
     val cornerStyle: CardCornerStyle = CardCornerStyle.Rounded,
     val density: ListDensity = ListDensity.Comfortable,
     val showServerPing: Boolean = true,
@@ -35,6 +43,11 @@ fun SettingsStore.toPersonalization(): Personalization = Personalization(
     serverActiveColor = customServerActiveColor.toColorOrNull(),
     configCardColor = customConfigCardColor.toColorOrNull(),
     configCardTextColor = customConfigCardTextColor.toColorOrNull(),
+    downloadColor = customDownloadColor.toColorOrNull(),
+    uploadColor = customUploadColor.toColorOrNull(),
+    downloadTileColor = customDownloadTileColor.toColorOrNull(),
+    uploadTileColor = customUploadTileColor.toColorOrNull(),
+    tapHintColor = customTapHintColor.toColorOrNull(),
     cornerStyle = cardCornerStyle,
     density = listDensity,
     showServerPing = showServerPing,
@@ -49,6 +62,11 @@ fun SettingsStore.hasPersonalization(): Boolean =
         customServerActiveColor != SettingsStore.UNSET_COLOR ||
         customConfigCardColor != SettingsStore.UNSET_COLOR ||
         customConfigCardTextColor != SettingsStore.UNSET_COLOR ||
+        customDownloadColor != SettingsStore.UNSET_COLOR ||
+        customUploadColor != SettingsStore.UNSET_COLOR ||
+        customDownloadTileColor != SettingsStore.UNSET_COLOR ||
+        customUploadTileColor != SettingsStore.UNSET_COLOR ||
+        customTapHintColor != SettingsStore.UNSET_COLOR ||
         cardCornerStyle != CardCornerStyle.Rounded ||
         listDensity != ListDensity.Comfortable ||
         !showServerPing || !showServerUsage || monospaceAddress ||
@@ -61,6 +79,11 @@ fun SettingsStore.resetPersonalization() {
     customServerActiveColor = SettingsStore.UNSET_COLOR
     customConfigCardColor = SettingsStore.UNSET_COLOR
     customConfigCardTextColor = SettingsStore.UNSET_COLOR
+    customDownloadColor = SettingsStore.UNSET_COLOR
+    customUploadColor = SettingsStore.UNSET_COLOR
+    customDownloadTileColor = SettingsStore.UNSET_COLOR
+    customUploadTileColor = SettingsStore.UNSET_COLOR
+    customTapHintColor = SettingsStore.UNSET_COLOR
     themeProfileId = null
     cardCornerStyle = CardCornerStyle.Rounded
     listDensity = ListDensity.Comfortable
@@ -69,15 +92,25 @@ fun SettingsStore.resetPersonalization() {
     monospaceAddress = false
 }
 
+/**
+ * Applies a theme profile exactly as the Zed model does: accent index,
+ * dynamic color OFF, the AMOLED flag onto the amoledBlack axis (theme
+ * mode itself is not touched), and all eleven personalize colors.
+ */
 fun SettingsStore.applyThemeProfile(profile: ThemeProfile) {
     accentColorIndex = profile.accentIndex
+    dynamicColor = false
+    amoledBlack = profile.amoled
+    customDownloadColor = profile.download
+    customUploadColor = profile.upload
+    customDownloadTileColor = profile.downloadTile
+    customUploadTileColor = profile.uploadTile
     customConnectColor = profile.connect
     customConnectedColor = profile.connected
+    customTapHintColor = profile.tapHint
     customServerCardColor = profile.serverCard
     customServerActiveColor = profile.serverActive
     customConfigCardColor = profile.configCard
     customConfigCardTextColor = profile.configCardText
     themeProfileId = profile.id
-    // AMOLED profile flag maps onto our AMOLED theme mode.
-    themeMode = if (profile.amoled) ThemeMode.AMOLED else ThemeMode.SYSTEM
 }

@@ -62,14 +62,49 @@ class AppearanceController(private val settingsStore: SettingsStore) {
     var hapticFeedback: Boolean by mutableStateOf(settingsStore.hapticFeedback)
         private set
 
+    // ---- Overhaul (Zed) appearance state ----
+    var amoledBlack: Boolean by mutableStateOf(settingsStore.amoledBlack)
+        private set
+    var groupAllDisplay: Boolean by mutableStateOf(settingsStore.groupAllDisplay)
+        private set
+    var uiFont: UiFont by mutableStateOf(settingsStore.uiFont)
+        private set
+    var uiScale: Float by mutableStateOf(settingsStore.uiScale)
+        private set
+    var showTrafficTiles: Boolean by mutableStateOf(settingsStore.showTrafficTiles)
+        private set
+    var trafficTilesAboveHero: Boolean by mutableStateOf(settingsStore.trafficTilesAboveHero)
+        private set
+    var trafficCardStyle: TrafficCardStyle by mutableStateOf(settingsStore.trafficCardStyle)
+        private set
+    var trafficTileSize: TrafficTileSize by mutableStateOf(settingsStore.trafficTileSize)
+        private set
+    var liveNotification: Boolean by mutableStateOf(settingsStore.liveNotification)
+        private set
+    var notifChip: NotifChip by mutableStateOf(settingsStore.notifChip)
+        private set
+    var notifStyle: NotifStyle by mutableStateOf(settingsStore.notifStyle)
+        private set
+    var speedInNotification: Boolean by mutableStateOf(settingsStore.speedInNotification)
+        private set
+    var bento: BentoPrefs by mutableStateOf(settingsStore.bentoPrefs)
+        private set
+    var navDestinations: String by mutableStateOf(settingsStore.navDestinations)
+        private set
+
     fun updateThemeMode(next: ThemeMode) {
         settingsStore.themeMode = next
         themeMode = next
     }
 
-    /** AMOLED switch: maps onto ThemeMode.AMOLED like ZedSecure's amoledBlack. */
+    /**
+     * AMOLED switch: the overhaul model stores it as its own flag
+     * (OverhaulMigration moved legacy ThemeMode.AMOLED users here), never
+     * as a theme mode.
+     */
     fun updateAmoled(on: Boolean) {
-        updateThemeMode(if (on) ThemeMode.AMOLED else ThemeMode.SYSTEM)
+        settingsStore.amoledBlack = on
+        amoledBlack = on
     }
 
     fun updateDynamicColor(on: Boolean) {
@@ -151,6 +186,11 @@ class AppearanceController(private val settingsStore: SettingsStore) {
         when (which) {
             PersonalizeSlot.Connect -> settingsStore.customConnectColor = value
             PersonalizeSlot.Connected -> settingsStore.customConnectedColor = value
+            PersonalizeSlot.Download -> settingsStore.customDownloadColor = value
+            PersonalizeSlot.Upload -> settingsStore.customUploadColor = value
+            PersonalizeSlot.DownloadTile -> settingsStore.customDownloadTileColor = value
+            PersonalizeSlot.UploadTile -> settingsStore.customUploadTileColor = value
+            PersonalizeSlot.TapHint -> settingsStore.customTapHintColor = value
             PersonalizeSlot.ServerCard -> settingsStore.customServerCardColor = value
             PersonalizeSlot.ServerActive -> settingsStore.customServerActiveColor = value
             PersonalizeSlot.ConfigCard -> settingsStore.customConfigCardColor = value
@@ -193,6 +233,119 @@ class AppearanceController(private val settingsStore: SettingsStore) {
         doubleColumnDisplay = on
     }
 
+    // ---- Overhaul updaters ----
+
+    fun updateGroupAllDisplay(on: Boolean) {
+        settingsStore.groupAllDisplay = on
+        groupAllDisplay = on
+    }
+
+    fun updateUiFont(next: UiFont) {
+        settingsStore.uiFont = next
+        uiFont = next
+    }
+
+    fun updateUiScale(next: Float) {
+        settingsStore.uiScale = next
+        uiScale = settingsStore.uiScale
+    }
+
+    fun updateShowTrafficTiles(on: Boolean) {
+        settingsStore.showTrafficTiles = on
+        showTrafficTiles = on
+        refreshPersonalization()
+    }
+
+    fun updateTrafficTilesAboveHero(on: Boolean) {
+        settingsStore.trafficTilesAboveHero = on
+        trafficTilesAboveHero = on
+        refreshPersonalization()
+    }
+
+    fun updateTrafficCardStyle(next: TrafficCardStyle) {
+        settingsStore.trafficCardStyle = next
+        trafficCardStyle = next
+        refreshPersonalization()
+    }
+
+    fun updateTrafficTileSize(next: TrafficTileSize) {
+        settingsStore.trafficTileSize = next
+        trafficTileSize = next
+        refreshPersonalization()
+    }
+
+    fun updateLiveNotification(on: Boolean) {
+        settingsStore.liveNotification = on
+        liveNotification = on
+    }
+
+    fun updateNotifChip(next: NotifChip) {
+        settingsStore.notifChip = next
+        notifChip = next
+    }
+
+    fun updateNotifStyle(next: NotifStyle) {
+        settingsStore.notifStyle = next
+        notifStyle = next
+    }
+
+    fun updateSpeedInNotification(on: Boolean) {
+        settingsStore.speedInNotification = on
+        speedInNotification = on
+    }
+
+    fun updateNavDestinations(encoded: String) {
+        settingsStore.navDestinations = encoded
+        navDestinations = encoded
+    }
+
+    /** Rewrites every Bento field from [next] into the store, then re-reads. */
+    fun updateBento(next: BentoPrefs) {
+        settingsStore.bentoPalette = next.palette
+        settingsStore.bentoCorners = next.corners
+        settingsStore.bentoTitle = next.title
+        settingsStore.bentoDensity = next.density
+        settingsStore.bentoMotifs = next.motifs
+        settingsStore.bentoPlayfulTouch = next.playfulTouch
+        settingsStore.bentoIndexes = next.indexes
+        settingsStore.bentoLiveTiles = next.liveTiles
+        settingsStore.bentoTiles = next.tiles
+        settingsStore.bentoDockLabels = next.dockLabels
+        settingsStore.bentoDockAutoHide = next.dockAutoHide
+        settingsStore.bentoNavStyle = next.navStyle
+        settingsStore.bentoConnect = next.connect
+        settingsStore.bentoWave = next.wave
+        settingsStore.bentoHomeSpeed = next.homeSpeed
+        settingsStore.bentoHomeSession = next.homeSession
+        settingsStore.bentoHomeQuick = next.homeQuick
+        settingsStore.bentoHomeChips = next.homeChips
+        bento = settingsStore.bentoPrefs
+    }
+
+    fun updateBentoPalette(next: BentoPalette) = updateBento(bento.copy(palette = next))
+    fun updateBentoCorners(next: BentoCorners) = updateBento(bento.copy(corners = next))
+    fun updateBentoTitle(next: BentoTitle) = updateBento(bento.copy(title = next))
+    fun updateBentoDensity(next: BentoDensity) = updateBento(bento.copy(density = next))
+    fun updateBentoMotifs(on: Boolean) = updateBento(bento.copy(motifs = on))
+    fun updateBentoPlayfulTouch(on: Boolean) = updateBento(bento.copy(playfulTouch = on))
+    fun updateBentoIndexes(on: Boolean) = updateBento(bento.copy(indexes = on))
+    fun updateBentoLiveTiles(on: Boolean) = updateBento(bento.copy(liveTiles = on))
+    fun updateBentoTiles(encoded: String) = updateBento(bento.copy(tiles = encoded))
+    fun updateBentoDockLabels(next: BentoDockLabels) = updateBento(bento.copy(dockLabels = next))
+    fun updateBentoDockAutoHide(on: Boolean) = updateBento(bento.copy(dockAutoHide = on))
+    fun updateBentoNavStyle(next: NavBarStyle) = updateBento(bento.copy(navStyle = next))
+    fun updateBentoConnect(next: BentoConnect) = updateBento(bento.copy(connect = next))
+    fun updateBentoWave(on: Boolean) = updateBento(bento.copy(wave = on))
+    fun updateBentoHomeSpeed(on: Boolean) = updateBento(bento.copy(homeSpeed = on))
+    fun updateBentoHomeSession(on: Boolean) = updateBento(bento.copy(homeSession = on))
+    fun updateBentoHomeQuick(on: Boolean) = updateBento(bento.copy(homeQuick = on))
+    fun updateBentoHomeChips(on: Boolean) = updateBento(bento.copy(homeChips = on))
+
+    /** Zed's "Reset look": every Bento field back to default except the tile layout. */
+    fun resetBentoLook() {
+        updateBento(BentoPrefs(tiles = bento.tiles))
+    }
+
     fun applyThemeProfile(profile: ThemeProfile?) {
         if (profile == null) {
             settingsStore.resetPersonalization()
@@ -202,6 +355,8 @@ class AppearanceController(private val settingsStore: SettingsStore) {
         themeProfileId = settingsStore.themeProfileId
         themeMode = settingsStore.themeMode
         accentColorIndex = settingsStore.accentColorIndex
+        amoledBlack = settingsStore.amoledBlack
+        dynamicColor = settingsStore.dynamicColor
         refreshPersonalization()
     }
 
@@ -228,6 +383,11 @@ class AppearanceController(private val settingsStore: SettingsStore) {
 enum class PersonalizeSlot(val title: String) {
     Connect("Connect button"),
     Connected("Connected state"),
+    Download("Download color"),
+    Upload("Upload color"),
+    DownloadTile("Download tile"),
+    UploadTile("Upload tile"),
+    TapHint("Tap hint"),
     ServerCard("Location card"),
     ServerActive("Active location card"),
     ConfigCard("Config card"),

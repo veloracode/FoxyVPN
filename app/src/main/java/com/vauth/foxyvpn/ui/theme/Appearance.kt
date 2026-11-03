@@ -14,8 +14,9 @@ import androidx.core.graphics.ColorUtils
 
 enum class ColorStyle(val label: String) {
     // Enum name "ZedSecure" is kept so existing saved preferences still load.
-    // Display label renamed to "Signature" per product request.
-    ZedSecure("Signature"),
+    // OVERHAUL (Phase B1, DEV-10): the display label is ZedSecure's own name
+    // for this style — "ZedSecure" (the v1 port showed "Signature").
+    ZedSecure("ZedSecure"),
     TonalSpot("Tonal Spot"),
     Vibrant("Vibrant"),
     Expressive("Expressive"),
@@ -58,11 +59,15 @@ enum class ScreenTransition(val label: String) {
 
 enum class NavBarStyle(val label: String) {
     FloatingPill("Floating pill"),
-    CompactDock("Compact dock"),
-    ExpressivePill("Expressive pill"),
     FullBar("Full bar"),
+    ExpressivePill("Expressive pill"),
+    CompactDock("Compact dock"),
     Underline("Underline"),
     Minimal("Minimal"),
+    // OVERHAUL: Zed's seventh style — the floating Bento dock. It is the
+    // Bento design's own nav style (BentoPrefs.navStyle defaults to it);
+    // the other six remain selectable for the shared bottom bar.
+    Dock("Dock"),
 }
 
 enum class ConnectButtonStyle(val label: String) {
@@ -74,10 +79,16 @@ enum class ConnectButtonStyle(val label: String) {
     Switch("Switch"),
 }
 
-enum class CardCornerStyle(val label: String, val cardDp: Int) {
-    Squared("Squared", 10),
-    Rounded("Rounded", 28),
-    Pill("Pill", 48),
+/**
+ * Card corner axis. OVERHAUL (Phase B1): values corrected to ZedSecure's —
+ * (card radius dp, tile radius scale): Squared (6, 0.30), Rounded (22, 1.0),
+ * Pill (34, 1.45). The v1 port's approximations (10/28/48, no scale) are
+ * gone; stored enum names are unchanged, so saved values carry over.
+ */
+enum class CardCornerStyle(val label: String, val cardDp: Int, val tileScale: Float) {
+    Squared("Squared", 6, 0.30f),
+    Rounded("Rounded", 22, 1.0f),
+    Pill("Pill", 34, 1.45f),
 }
 
 enum class ListDensity(val label: String) {
@@ -344,53 +355,124 @@ fun ColorScheme.applyAmoled(dark: Boolean): ColorScheme {
     )
 }
 
-/** Stock theme profiles (original designs): one tap applies accent + key colors. */
+/**
+ * Theme profiles. OVERHAUL (Phase B1): the v1 port's three invented
+ * profiles (Lagoon/Sunset/Onyx) are replaced by ZedSecure v3.1.8's eleven,
+ * values as extracted in DESIGN-SYSTEM §3.5. A profile carries an accent
+ * index, an AMOLED flag, and the eleven personalize colors.
+ */
 data class ThemeProfile(
     val id: String,
     val name: String,
     val accentIndex: Int,
     val amoled: Boolean = false,
+    val download: Long,
+    val upload: Long,
+    val downloadTile: Long,
+    val uploadTile: Long,
     val connect: Long,
     val connected: Long,
+    val tapHint: Long,
     val serverCard: Long,
     val serverActive: Long,
     val configCard: Long,
     val configCardText: Long,
-)
+) {
+    /** Preview swatches (connect, download, upload), as in Zed's picker. */
+    val swatches: List<Color>
+        get() = listOf(Color(connect), Color(download), Color(upload))
+}
 
 val ThemeProfiles: List<ThemeProfile> = listOf(
     ThemeProfile(
-        id = "lagoon",
-        name = "Lagoon",
-        accentIndex = 2,
-        connect = 0xFF00897E,
-        connected = 0xFF00564F,
-        serverCard = 0xFF0E2A28,
-        serverActive = 0xFF0B3D3A,
-        configCard = 0xFF0E2A28,
-        configCardText = 0xFFD7F4F0,
+        id = "aurora", name = "Aurora", accentIndex = 2,
+        download = 0xFF4FE3D8, upload = 0xFFB49BFF,
+        downloadTile = 0xFF0D3B37, uploadTile = 0xFF241A48,
+        connect = 0xFF12A594, connected = 0xFF7C5CFF, tapHint = 0xFFA9E9E2,
+        serverCard = 0xFF11302E, serverActive = 0xFF12A594,
+        configCard = 0xFF12332F, configCardText = 0xFFEAFFFB,
     ),
     ThemeProfile(
-        id = "sunset",
-        name = "Sunset",
-        accentIndex = 4,
-        connect = 0xFFB4690E,
-        connected = 0xFF7A3E00,
-        serverCard = 0xFF2E1E08,
-        serverActive = 0xFF3D2809,
-        configCard = 0xFF2E1E08,
-        configCardText = 0xFFFFEDD2,
+        id = "ember", name = "Ember", accentIndex = 4,
+        download = 0xFFFFB870, upload = 0xFFFF8A65,
+        downloadTile = 0xFF3D2409, uploadTile = 0xFF43200F,
+        connect = 0xFFE07A1F, connected = 0xFFC0392B, tapHint = 0xFFFFD9AE,
+        serverCard = 0xFF33200C, serverActive = 0xFFE07A1F,
+        configCard = 0xFF3A2410, configCardText = 0xFFFFF1E2,
     ),
     ThemeProfile(
-        id = "onyx",
-        name = "Onyx",
-        accentIndex = 0,
-        amoled = true,
-        connect = 0xFF5646D6,
-        connected = 0xFF2E2370,
-        serverCard = 0xFF101014,
-        serverActive = 0xFF1B1830,
-        configCard = 0xFF14141A,
-        configCardText = 0xFFE4E1FF,
+        id = "midnight", name = "Midnight", accentIndex = 1, amoled = true,
+        download = 0xFF7FB2FF, upload = 0xFF9BC4FF,
+        downloadTile = 0xFF0B1730, uploadTile = 0xFF101B36,
+        connect = 0xFF2563EB, connected = 0xFF1E3A8A, tapHint = 0xFFA9C6F5,
+        serverCard = 0xFF0C1526, serverActive = 0xFF2563EB,
+        configCard = 0xFF0D1932, configCardText = 0xFFE6EEFF,
+    ),
+    ThemeProfile(
+        id = "sakura", name = "Sakura", accentIndex = 5,
+        download = 0xFFFFA8C5, upload = 0xFFFFC2D6,
+        downloadTile = 0xFF3E1226, uploadTile = 0xFF45182C,
+        connect = 0xFFD9407A, connected = 0xFF8E2751, tapHint = 0xFFFFCFE0,
+        serverCard = 0xFF351023, serverActive = 0xFFD9407A,
+        configCard = 0xFF3B1428, configCardText = 0xFFFFF0F5,
+    ),
+    ThemeProfile(
+        id = "citrus", name = "Citrus", accentIndex = 3,
+        download = 0xFFC7F24E, upload = 0xFF8FD14F,
+        downloadTile = 0xFF243007, uploadTile = 0xFF1E2A0A,
+        connect = 0xFF9BC91F, connected = 0xFF3F6212, tapHint = 0xFFDDF59A,
+        serverCard = 0xFF1E2708, serverActive = 0xFF9BC91F,
+        configCard = 0xFF232E09, configCardText = 0xFFF2FFD6,
+    ),
+    ThemeProfile(
+        id = "mono", name = "Mono", accentIndex = 9,
+        download = 0xFFE4E4E7, upload = 0xFFB4B4BB,
+        downloadTile = 0xFF1C1C1E, uploadTile = 0xFF232326,
+        connect = 0xFF3F3F46, connected = 0xFF71717A, tapHint = 0xFFC7C7CC,
+        serverCard = 0xFF1A1A1C, serverActive = 0xFF3F3F46,
+        configCard = 0xFF1D1D20, configCardText = 0xFFF2F2F7,
+    ),
+    ThemeProfile(
+        id = "neonlime", name = "Neon Lime", accentIndex = 3, amoled = true,
+        download = 0xFFD4FF3F, upload = 0xFF9EE84A,
+        downloadTile = 0xFF0A0F00, uploadTile = 0xFF0C1200,
+        connect = 0xFFC7F24E, connected = 0xFF4A7C0F, tapHint = 0xFFDFFF9E,
+        serverCard = 0xFF080B00, serverActive = 0xFFC7F24E,
+        configCard = 0xFF0B1000, configCardText = 0xFFEBFFC2,
+    ),
+    ThemeProfile(
+        id = "tokyo", name = "Tokyo", accentIndex = 1, amoled = true,
+        download = 0xFF7AA2F7, upload = 0xFFBB9AF7,
+        downloadTile = 0xFF0B0D17, uploadTile = 0xFF11101F,
+        connect = 0xFF7AA2F7, connected = 0xFFBB9AF7, tapHint = 0xFF9AA5CE,
+        serverCard = 0xFF090B14, serverActive = 0xFF7AA2F7,
+        configCard = 0xFF0C0F1A, configCardText = 0xFFC0CAF5,
+    ),
+    ThemeProfile(
+        id = "solar", name = "Solar", accentIndex = 4,
+        download = 0xFFFFD54F, upload = 0xFFFFB300,
+        downloadTile = 0xFF3A2E05, uploadTile = 0xFF33280A,
+        connect = 0xFFFFC107, connected = 0xFF8D6E00, tapHint = 0xFFFFE9A8,
+        serverCard = 0xFF2E2506, serverActive = 0xFFFFC107,
+        configCard = 0xFF352A07, configCardText = 0xFFFFF6DA,
+    ),
+    ThemeProfile(
+        id = "moss", name = "Moss", accentIndex = 3,
+        download = 0xFF6EE7A8, upload = 0xFF34D399,
+        downloadTile = 0xFF07231A, uploadTile = 0xFF0A2A20,
+        connect = 0xFF10B981, connected = 0xFF065F46, tapHint = 0xFFA7F3D0,
+        serverCard = 0xFF061D16, serverActive = 0xFF10B981,
+        configCard = 0xFF08251C, configCardText = 0xFFE3FFF4,
+    ),
+    ThemeProfile(
+        id = "clay", name = "Clay", accentIndex = 6,
+        download = 0xFFE0A08A, upload = 0xFFD97757,
+        downloadTile = 0xFF33201A, uploadTile = 0xFF3A231B,
+        connect = 0xFFD97757, connected = 0xFF8C4A34, tapHint = 0xFFF0C8B6,
+        serverCard = 0xFF2B1B15, serverActive = 0xFFD97757,
+        configCard = 0xFF32201A, configCardText = 0xFFFFEDE3,
     ),
 )
+
+fun themeProfileOf(id: String?): ThemeProfile? =
+    id?.let { wanted -> ThemeProfiles.firstOrNull { it.id == wanted } }
