@@ -170,6 +170,16 @@ fun ServerListScreen(
                             key = { row ->
                                 when (row) {
                                     is LocationRow.RecommendedRow ->
+                                        "recommended:${row.country.code}"
+                                    is LocationRow.CountryHeader -> "country:${row.country.code}"
+                                    is LocationRow.CityRow ->
+                                        "city:${row.country.code}:${row.country.cities[row.cityIndex].code}"
+                                }
+                            },
+                        ) { row ->
+                            val selected = selectedState
+                            when (row) {
+                                is LocationRow.RecommendedRow ->
                                     androidx.compose.foundation.layout.Row(
                                         Modifier
                                             .fillMaxWidth()
@@ -333,7 +343,7 @@ fun ServerListScreen(
                                         androidx.compose.foundation.layout.Spacer(Modifier.width(12.dp))
                                         androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
                                             Text(
-                                                com.vauth.foxyvpn.ui.map.CityCoordinates.nameOf(city.code) ?: city.code,
+                                                com.vauth.foxyvpn.ui.map.CityCoordinates.forCityCode(city.code)?.cityName ?: city.code,
                                                 style = MaterialTheme.typography.titleSmall,
                                                 fontWeight = FontWeight.SemiBold,
                                             )

@@ -170,9 +170,11 @@ fun rememberStatusTaps(onLaser: () -> Unit): () -> Unit {
     }
 }
 
+@Composable
 fun connectStatusText(state: BentoConnectState, error: String?): String = when (state) {
     BentoConnectState.Connected -> s("Connected")
     BentoConnectState.Connecting -> s("Connecting…")
+    BentoConnectState.Disconnecting -> s("Disconnecting…")
     BentoConnectState.Error -> error ?: s("Connection failed")
     BentoConnectState.Idle -> s("Disconnected")
 }

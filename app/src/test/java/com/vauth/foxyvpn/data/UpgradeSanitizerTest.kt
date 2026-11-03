@@ -126,4 +126,29 @@ class UpgradeSanitizerTest {
         assertFalse(prefs.contains("proxy_only_mode"))
         assertEquals(UpgradeSanitizer.CURRENT_REVISION, prefs.getInt(UpgradeSanitizer.KEY_REVISION, 0))
     }
+
+    /**
+     * B2 rev 2: a device that already ran the vc54 sanitizer (marker 1)
+     * re-runs the reset once, and the newly listed legacy key
+     * upstream_proxy_tls — which feeds the builder's review-flag
+     * derivation — is removed too.
+     */
+    @Test
+    fun revision1Device_rerunsOnce_andUpstreamProxyTlsIsReset() {
+        val prefs = FakeSharedPreferences(
+            mapOf(
+                UpgradeSanitizer.KEY_REVISION to 1,
+                "upstream_proxy_tls" to true,
+                "upstream_proxy_enabled" to true,
+                "proxy_only_mode" to true,
+            ),
+        )
+        assertTrue(UpgradeSanitizer.sanitize(prefs) {})
+        assertFalse(prefs.contains("upstream_proxy_tls"))
+        assertFalse(prefs.contains("upstream_proxy_enabled"))
+        assertFalse(prefs.contains("proxy_only_mode"))
+        assertEquals(2, prefs.getInt(UpgradeSanitizer.KEY_REVISION, 0))
+        // And it is once-only again at the new revision.
+        assertFalse(UpgradeSanitizer.sanitize(prefs) {})
+    }
 }

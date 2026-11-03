@@ -99,14 +99,15 @@ fun MapScreen(container: AppContainer, onBack: () -> Unit) {
     val budget = LocalMotionBudget.current
     val animate = budget == MotionBudget.Full
 
-    val focusPoint = selected?.let { CityCoordinates.forCityCode(it.cityCode) }
-    val pins = remember(serverState.countries, selected) {
+    val selectedNow = selected
+    val focusPoint = selectedNow?.let { CityCoordinates.forCityCode(it.cityCode) }
+    val pins = remember(serverState.countries, selectedNow) {
         val list = ArrayList<MapPin>()
         for (country in serverState.countries) {
             for (city in country.cities) {
                 val point = CityCoordinates.forCityCode(city.code) ?: continue
-                val isFocus = selected != null &&
-                    selected.countryCode == country.code && selected.cityCode == city.code
+                val isFocus = selectedNow != null &&
+                    selectedNow.countryCode == country.code && selectedNow.cityCode == city.code
                 list += MapPin(point.lon.toFloat(), point.lat.toFloat(), isFocus)
             }
         }
@@ -126,14 +127,14 @@ fun MapScreen(container: AppContainer, onBack: () -> Unit) {
     }
 
     val exitLabel = when {
-        focusPoint != null && selected != null ->
-            "${focusPoint.cityName}, ${selected.displayName}"
-        selected != null -> selected.displayName
+        focusPoint != null && selectedNow != null ->
+            "${focusPoint.cityName}, ${selectedNow.displayName}"
+        selectedNow != null -> selectedNow.displayName
         else -> "—"
     }
     val statusLabel = when {
         connected -> s("Connected")
-        selected != null -> s("Selected")
+        selectedNow != null -> s("Selected")
         else -> "—"
     }
 
