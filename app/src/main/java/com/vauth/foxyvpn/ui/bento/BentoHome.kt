@@ -340,9 +340,12 @@ private fun ConnectControlWithElapsed(
     val connectedAt by FoxyVpnService.connectedAtElapsedMs.collectAsState()
     var elapsed by remember { mutableIntStateOf(0) }
     LaunchedEffect(connectedAt, state) {
-        while (state == BentoConnectState.Connected && connectedAt > 0L) {
-            elapsed = ((android.os.SystemClock.elapsedRealtime() - connectedAt) / 1000).toInt().coerceAtLeast(0)
-            delay(1000)
+        val started = connectedAt
+        if (state == BentoConnectState.Connected && started != null) {
+            while (true) {
+                elapsed = ((android.os.SystemClock.elapsedRealtime() - started) / 1000).toInt().coerceAtLeast(0)
+                delay(1000)
+            }
         }
         if (state != BentoConnectState.Connected) elapsed = 0
     }
@@ -491,9 +494,12 @@ private fun SessionTilesRow(live: Boolean, onStatusTap: () -> Unit) {
     val connectedAt by FoxyVpnService.connectedAtElapsedMs.collectAsState()
     var elapsed by remember { mutableIntStateOf(0) }
     LaunchedEffect(connectedAt, live) {
-        while (live && connectedAt > 0L) {
-            elapsed = ((android.os.SystemClock.elapsedRealtime() - connectedAt) / 1000).toInt().coerceAtLeast(0)
-            delay(1000)
+        val started = connectedAt
+        if (live && started != null) {
+            while (true) {
+                elapsed = ((android.os.SystemClock.elapsedRealtime() - started) / 1000).toInt().coerceAtLeast(0)
+                delay(1000)
+            }
         }
         if (!live) elapsed = 0
     }

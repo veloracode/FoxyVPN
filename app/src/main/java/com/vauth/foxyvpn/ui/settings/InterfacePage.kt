@@ -723,6 +723,7 @@ private fun PalettePicker(appearance: AppearanceController) {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun ColorStylePicker(appearance: AppearanceController) {
     val cs = MaterialTheme.colorScheme
@@ -827,6 +828,7 @@ private fun ThemeProfileCard(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun FontPickerRow(appearance: AppearanceController) {
     val cs = MaterialTheme.colorScheme

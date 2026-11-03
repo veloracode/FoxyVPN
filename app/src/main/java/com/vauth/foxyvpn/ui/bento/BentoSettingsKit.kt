@@ -70,7 +70,7 @@ import com.vauth.foxyvpn.ui.l10n.s
 @Composable
 fun SettingsPageScaffold(
     title: String,
-    subtitle: String?,
+    subtitle: String? = null,
     art: SettingsArt?,
     onBack: () -> Unit,
     content: @Composable () -> Unit,
@@ -137,7 +137,7 @@ fun SettingsGroup(
 }
 
 @Composable
-private fun RowBody(
+internal fun RowBody(
     title: String,
     description: String?,
     enabled: Boolean = true,
@@ -356,10 +356,11 @@ fun SettingsChoiceRow(
     title: String,
     description: String? = null,
     options: List<String>,
-    selectedIndex: Int,
+    selected: String,
     enabled: Boolean = true,
-    onSelect: (Int) -> Unit,
+    onSelect: (String) -> Unit,
 ) {
+    val selectedIndex = options.indexOf(selected).coerceAtLeast(0)
     Column(
         Modifier
             .fillMaxWidth()
@@ -386,9 +387,9 @@ fun SettingsChoiceRow(
             }
         }
         if (fitsConnected(options)) {
-            ConnectedChoices(options, selectedIndex, enabled, onSelect)
+            ConnectedChoices(options, selectedIndex, enabled) { onSelect(options[it]) }
         } else {
-            ChoiceChips(options, selectedIndex, enabled, onSelect)
+            ChoiceChips(options, selectedIndex, enabled) { onSelect(options[it]) }
         }
     }
 }
@@ -402,13 +403,14 @@ fun SettingsListRow(
     title: String,
     description: String? = null,
     options: List<String>,
-    selectedIndex: Int,
+    selected: String,
     enabled: Boolean = true,
-    onSelect: (Int) -> Unit,
+    onSelect: (String) -> Unit,
 ) {
+    val selectedIndex = options.indexOf(selected).coerceAtLeast(0)
     val inline = options.size <= 3 && options.all { it.length <= 13 }
     if (inline) {
-        SettingsChoiceRow(title, description, options, selectedIndex, enabled, onSelect)
+        SettingsChoiceRow(title, description, options, selected, enabled, onSelect)
         return
     }
     var expanded by remember { mutableStateOf(false) }
@@ -420,7 +422,7 @@ fun SettingsListRow(
     ) {
         RowBody(
             title = title,
-            description = description ?: options.getOrNull(selectedIndex),
+            description = description ?: selected,
             enabled = enabled,
             trailing = {
                 Icon(
@@ -435,7 +437,7 @@ fun SettingsListRow(
         if (expanded) {
             Box(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                 ChoiceChips(options, selectedIndex, enabled) {
-                    onSelect(it)
+                    onSelect(options[it])
                     expanded = false
                 }
             }

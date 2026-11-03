@@ -24,7 +24,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
 import androidx.core.view.WindowCompat
 import com.vauth.foxyvpn.data.SettingsStore
-import com.vauth.foxyvpn.ui.AppearanceController
 
 /**
  * FoxyVpnTheme — Phase B1 of the Zed overhaul.
@@ -124,7 +123,6 @@ fun FoxyVpnTheme(
  * (DESIGN-SYSTEM §8.1). Roles the scheme does not expose animate as
  * their structural counterparts.
  */
-@Composable
 @Composable
 private fun animateColorScheme(target: ColorScheme, light: Boolean): ColorScheme {
     @Composable

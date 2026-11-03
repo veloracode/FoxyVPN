@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -54,7 +55,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.LayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -244,7 +244,7 @@ fun Modifier.bentoMotif(
     val by = bleedY.toPx()
     val tint = color.copy(alpha = color.alpha * alpha)
     onDrawBehind {
-        val rtl = layoutDirection == LayoutDirection.Rtl
+        val rtl = layoutDirection == ComposeLayoutDirection.Rtl
         val center = Offset(
             if (rtl) px / 2f - bx else this.size.width - px / 2f + bx,
             this.size.height - px / 2f + by,
@@ -257,6 +257,7 @@ fun Modifier.bentoMotif(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BentoCard(
     tone: BentoTone,
@@ -320,6 +321,7 @@ fun BentoCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MotifButton(
     shape: RoundedPolygon,
@@ -513,6 +515,7 @@ fun BentoSearchField(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BentoChip(
     label: String,
@@ -677,7 +680,7 @@ fun MorphingBlob(
     startShape: RoundedPolygon,
     endShape: RoundedPolygon,
     modifier: Modifier = Modifier,
-    content: @Composable BoxScopeContent = {},
+    content: BoxScopeContent = {},
 ) {
     val morph = remember(startShape, endShape) { Morph(startShape, endShape) }
     Box(
