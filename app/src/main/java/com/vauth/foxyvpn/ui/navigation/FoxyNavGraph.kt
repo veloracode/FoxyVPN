@@ -58,6 +58,10 @@ object FoxyRoutes {
     // Fork additions.
     const val ACCOUNTS = "accounts"
     const val ADD_ACCOUNT = "add_account"
+    // Overhaul Phase B2: the completed Zed surface.
+    const val MAP = "map"
+    const val SPEED_TEST = "speed_test"
+    const val EASTER_EGG = "easter_egg"
     // Overhaul (B1): settings sub-pages, one route per hub tile.
     const val SETTINGS_INTERFACE = "settings/interface"
     const val SETTINGS_NAVBAR = "settings/navbar"
@@ -246,6 +250,9 @@ fun FoxyNavGraph(
                 onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
                 onOpenAccounts = { navController.navigate(FoxyRoutes.ACCOUNTS) },
                 onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
+                onOpenSpeedTest = { navController.navigate(FoxyRoutes.SPEED_TEST) },
+                onOpenMap = { navController.navigate(FoxyRoutes.MAP) },
+                onSecretUnlocked = { navController.navigate(FoxyRoutes.EASTER_EGG) },
             )
         }
         composable(FoxyRoutes.SERVERS) {
@@ -462,5 +469,22 @@ fun FoxyNavGraph(
             )
         }
         composable(FoxyRoutes.LOGS) { LogsScreen(onBack = { navController.popBackStack() }) }
+        composable(FoxyRoutes.MAP) {
+            com.vauth.foxyvpn.ui.map.MapScreen(
+                container = container,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SPEED_TEST) {
+            com.vauth.foxyvpn.ui.speedtest.SpeedTestScreen(
+                container = container,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.EASTER_EGG) {
+            com.vauth.foxyvpn.ui.easteregg.SpaceEggScreen(
+                onExit = { navController.popBackStack() },
+            )
+        }
     }
 }
