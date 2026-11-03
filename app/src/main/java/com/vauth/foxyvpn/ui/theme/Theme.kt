@@ -81,7 +81,7 @@ fun FoxyVpnTheme(
             style = appearance.colorStyle,
             contrast = appearance.colorContrast,
         )
-        if (amoled && darkTheme) base.applyAmoled() else base
+        if (amoled && darkTheme) base.applyAmoled(darkTheme) else base
     }
     val animatedScheme = animateColorScheme(targetScheme, light = !darkTheme)
 

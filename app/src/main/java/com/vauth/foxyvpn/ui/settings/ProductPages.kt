@@ -338,6 +338,8 @@ fun CoreSettingsPage(settingsStore: SettingsStore, onBack: () -> Unit) {
 @Composable
 fun ModeSettingsPage(settingsStore: SettingsStore, onBack: () -> Unit) {
     var proxyOnlyMode by remember { mutableStateOf(settingsStore.proxyOnlyMode) }
+    val normalLabel = s("Normal")
+    val proxyOnlyLabel = s("Proxy only")
     SettingsPageScaffold(
         title = s("Mode"),
         art = hubArt(BentoTiles.MODE),
@@ -346,10 +348,10 @@ fun ModeSettingsPage(settingsStore: SettingsStore, onBack: () -> Unit) {
         SettingsGroup(null, listOf {
             SettingsChoiceRow(
                 title = s("Connection mode"),
-                options = listOf(s("Normal"), s("Proxy only")),
-                selected = if (proxyOnlyMode) s("Proxy only") else s("Normal"),
+                options = listOf(normalLabel, proxyOnlyLabel),
+                selected = if (proxyOnlyMode) proxyOnlyLabel else normalLabel,
                 onSelect = { label ->
-                    val next = label == s("Proxy only")
+                    val next = label == proxyOnlyLabel
                     settingsStore.proxyOnlyMode = next
                     proxyOnlyMode = next
                 },
