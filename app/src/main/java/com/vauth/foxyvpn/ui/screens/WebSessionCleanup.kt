@@ -53,7 +53,7 @@ suspend fun fxAWebSessionAlive(): Boolean {
         runCatching {
             WebStorage.getInstance().getOrigins { origins ->
                 if (cont.isActive) {
-                    cont.resume(origins?.keys?.any { it.contains("accounts.firefox.com") } == true)
+                    cont.resume(origins?.keys?.any { it.origin.contains("accounts.firefox.com") } == true)
                 }
             }
         }.onFailure { if (cont.isActive) cont.resume(false) }
