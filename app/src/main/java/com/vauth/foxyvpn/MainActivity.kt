@@ -104,11 +104,8 @@ class MainActivity : ComponentActivity() {
             val resolvedLang = rememberResolvedLang(appearance.appLanguage)
 
             FoxyVpnTheme(
-                themeMode = appearance.themeMode,
-                dynamicColor = appearance.dynamicColor,
-                colorStyle = appearance.colorStyle,
-                accentColorIndex = appearance.accentColorIndex,
-                colorContrast = appearance.colorContrast,
+                appearance = appearance,
+                languageTag = if (resolvedLang == com.vauth.foxyvpn.ui.l10n.ResolvedLang.Persian) "fa" else "en",
             ) {
                 CompositionLocalProvider(
                     LocalDensity provides scaledDensity,
