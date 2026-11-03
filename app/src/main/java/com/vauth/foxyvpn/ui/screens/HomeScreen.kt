@@ -1,6 +1,8 @@
 package com.vauth.foxyvpn.ui.screens
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -10,6 +12,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -36,6 +39,7 @@ import com.vauth.foxyvpn.ui.resolveHomeQuota
 import com.vauth.foxyvpn.ui.theme.AppearanceController
 import com.vauth.foxyvpn.ui.theme.MotionBudget
 import com.vauth.foxyvpn.ui.theme.LocalMotionBudget
+import com.vauth.foxyvpn.ui.theme.toPersonalization
 import com.vauth.foxyvpn.vpn.FoxyVpnService
 import com.vauth.foxyvpn.vpn.PingUtil
 import com.vauth.foxyvpn.vpn.TunnelHealth
@@ -54,8 +58,9 @@ import java.util.Locale
  * [BentoHome] renders it. Home observes the tunnel, the selected
  * server and the account — it never owns any of them, and the connect
  * path (MainActivity's requestConnect / service start-stop) is
- * untouched. Pixel/Portal/Old bodies are gone (git history keeps
- * them); Bento is the only design the preview ships.
+ * untouched. Phase B2: all three Zed designs render the same state —
+ * Bento (B1), Pixel and Old (ui.designs) — dispatched on
+ * [AppearanceController.appDesign] below.
  */
 @Composable
 fun HomeScreen(
@@ -68,6 +73,9 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenLogs: () -> Unit,
+    onOpenSpeedTest: () -> Unit,
+    onOpenMap: () -> Unit,
+    onSecretUnlocked: () -> Unit,
 ) {
     val state by FoxyVpnService.state.collectAsState()
     val lastError by FoxyVpnService.lastError.collectAsState()
@@ -228,55 +236,112 @@ fun HomeScreen(
         (budget == MotionBudget.Throttled && state == ConnectionState.CONNECTING)
 
     val haptics = LocalHapticFeedback.current
+    // Egg overlays (DESIGN-SYSTEM §11.1): the title 3-tap burst and the
+    // status 3-tap laser live at this level, above whichever design is
+    // showing — exactly where Zed's HomeScreen hosts them.
+    var burst by remember { mutableIntStateOf(0) }
+    var laser by remember { mutableIntStateOf(0) }
+    val personalization = container.settingsStore.toPersonalization()
+    val dockContent: @Composable () -> Unit = {
+        FoxyNavBar(
+            style = appearance.bento.navStyle,
+            destinations = decodeNavDestinations(appearance.navDestinations),
+            current = FoxyDestination.Home,
+            onNavigate = { dest ->
+                when (dest) {
+                    FoxyDestination.Home -> Unit
+                    FoxyDestination.Servers -> onOpenServers()
+                    FoxyDestination.Accounts -> onOpenAccounts()
+                    FoxyDestination.Settings -> onOpenSettings()
+                }
+            },
+        )
+    }
+    val toggleConnection = {
+        if (state == ConnectionState.DISCONNECTED) onRequestConnect() else onDisconnect()
+    }
+    val refreshInfo = {
+        pingNonce++
+        homeModel.refreshAccount()
+    }
     CompositionLocalProvider(
         LocalBentoHaptics provides { type: HapticFeedbackType ->
             if (appearance.hapticFeedback) haptics.performHapticFeedback(type)
         },
     ) {
-        BentoHome(
-            ui = ui,
-            animate = animate,
-            contentPadding = PaddingValues(),
-            dockAutoHide = appearance.bento.dockAutoHide,
-            onToggleConnection = {
-                if (state == ConnectionState.DISCONNECTED) onRequestConnect() else onDisconnect()
-            },
-            onBrowseServers = onOpenServers,
-            onPickServer = { id ->
-                pickCandidates[id]?.firstOrNull()?.let { candidate ->
-                    serverListModel.selectCandidate(candidate)
-                }
-            },
-            onOpenAccounts = onOpenAccounts,
-            onOpenSpeedTest = null,
-            onOpenMap = null,
-            onRefreshInfo = {
-                pingNonce++
-                homeModel.refreshAccount()
-            },
-            onSecretUnlocked = {
-                // Phase B2: the space-game egg unlocks here (DESIGN-SYSTEM §11).
-            },
-            onShowLogs = onOpenLogs,
-            onBurst = {
-                // Phase B2: the LaserBounce burst overlay fires here.
-            },
-            dock = {
-                FoxyNavBar(
-                    style = appearance.bento.navStyle,
-                    destinations = decodeNavDestinations(appearance.navDestinations),
-                    current = FoxyDestination.Home,
-                    onNavigate = { dest ->
-                        when (dest) {
-                            FoxyDestination.Home -> Unit
-                            FoxyDestination.Servers -> onOpenServers()
-                            FoxyDestination.Accounts -> onOpenAccounts()
-                            FoxyDestination.Settings -> onOpenSettings()
+        Box {
+            when (appearance.appDesign) {
+                com.vauth.foxyvpn.data.SettingsStore.AppDesign.BENTO -> BentoHome(
+                    ui = ui,
+                    animate = animate,
+                    contentPadding = PaddingValues(),
+                    dockAutoHide = appearance.bento.dockAutoHide,
+                    onToggleConnection = toggleConnection,
+                    onBrowseServers = onOpenServers,
+                    onPickServer = { id ->
+                        pickCandidates[id]?.firstOrNull()?.let { candidate ->
+                            serverListModel.selectCandidate(candidate)
                         }
                     },
+                    onOpenAccounts = onOpenAccounts,
+                    onOpenSpeedTest = onOpenSpeedTest,
+                    onOpenMap = onOpenMap,
+                    onRefreshInfo = refreshInfo,
+                    onSecretUnlocked = onSecretUnlocked,
+                    onShowLogs = onOpenLogs,
+                    onBurst = { burst++ },
+                    dock = dockContent,
                 )
-            },
-        )
+                com.vauth.foxyvpn.data.SettingsStore.AppDesign.PIXEL ->
+                    com.vauth.foxyvpn.ui.designs.PixelHome(
+                        ui = ui,
+                        animate = animate,
+                        appearance = appearance,
+                        personalization = personalization,
+                        contentPadding = PaddingValues(),
+                        onToggleConnection = toggleConnection,
+                        onBrowseServers = onOpenServers,
+                        onOpenAccounts = onOpenAccounts,
+                        onOpenSpeedTest = onOpenSpeedTest,
+                        onOpenMap = onOpenMap,
+                        onRefreshInfo = refreshInfo,
+                        onSecretUnlocked = onSecretUnlocked,
+                        onShowLogs = onOpenLogs,
+                        onBurst = { burst++ },
+                        onLaser = { laser++ },
+                        dock = dockContent,
+                    )
+                com.vauth.foxyvpn.data.SettingsStore.AppDesign.OLD ->
+                    com.vauth.foxyvpn.ui.designs.OldHome(
+                        ui = ui,
+                        animate = animate,
+                        appearance = appearance,
+                        personalization = personalization,
+                        contentPadding = PaddingValues(),
+                        onToggleConnection = toggleConnection,
+                        onBrowseServers = onOpenServers,
+                        onOpenAccounts = onOpenAccounts,
+                        onOpenSpeedTest = onOpenSpeedTest,
+                        onOpenMap = onOpenMap,
+                        onRefreshInfo = refreshInfo,
+                        onSecretUnlocked = onSecretUnlocked,
+                        onShowLogs = onOpenLogs,
+                        onBurst = { burst++ },
+                        onLaser = { laser++ },
+                        dock = dockContent,
+                    )
+            }
+            com.vauth.foxyvpn.ui.designs.ParticleBurst(
+                trigger = burst,
+                modifier = Modifier.fillMaxSize(),
+            )
+            com.vauth.foxyvpn.ui.designs.LaserBounce(
+                trigger = laser,
+                color = personalization.connectColor
+                    ?: androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 
