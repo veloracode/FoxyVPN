@@ -40,7 +40,6 @@ import com.vauth.foxyvpn.ui.l10n.s
 /**
  * The fork's settings additions, in upstream v2's ListItem idiom:
  *
- * - [ForkAccountsRow]: entry to the multi-account screen.
  * - [AntiBlockSettingsSection]: "When Mozilla can't be reached" — the
  *   three control-plane fallbacks, as in the v1 fork: TLS split mode
  *   (the fork's own control-plane ClientHello splitter, restored in
@@ -53,19 +52,7 @@ import com.vauth.foxyvpn.ui.l10n.s
  */
 
 @Composable
-fun ForkAccountsRow(onOpenAccounts: () -> Unit) {
-    ListItem(
-        headlineContent = { Text(s("Accounts")) },
-        supportingContent = { Text(s("Multi-account list, quotas and switching")) },
-        trailingContent = {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
-        },
-        modifier = Modifier.clickable(onClick = onOpenAccounts),
-    )
-}
-
-@Composable
-fun AntiBlockSettingsSection(settingsStore: SettingsStore) {
+fun AntiBlockSettingsSection(settingsStore: SettingsStore, showHeader: Boolean = true) {
     var tlsSplitMode by remember { mutableStateOf(settingsStore.tlsSplitMode) }
     var apiProxyEnabled by remember { mutableStateOf(settingsStore.apiProxyEnabled) }
     var apiProxyHost by remember { mutableStateOf(settingsStore.apiProxyHost) }
@@ -134,7 +121,9 @@ fun AntiBlockSettingsSection(settingsStore: SettingsStore) {
         )
     }
 
-    ForkSectionLabel(s("When Mozilla can't be reached"))
+    if (showHeader) {
+        ForkSectionLabel(s("When Mozilla can't be reached"))
+    }
     ListItem(
         headlineContent = { Text(s("TLS split mode")) },
         supportingContent = { Text(tlsSplitMode.label) },

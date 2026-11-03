@@ -14,7 +14,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -59,27 +58,45 @@ private sealed interface AppListState {
 private val PackageSelectionSaver =
     listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
 
+/**
+ * Split-tunnel app picker — Phase B1 of the Zed overhaul.
+ *
+ * The v1 fork's SplitTunnelDialog re-hosted as page content
+ * (DESIGN-MAP §6.2: the dialog becomes a page, same picker
+ * behaviour). Changes apply immediately through the store; the one
+ * guard kept from the dialog is that INCLUDE mode with an empty
+ * selection is not persisted (the error note shows instead) — it
+ * persists as soon as an app is picked.
+ */
 @Composable
-internal fun SplitTunnelDialog(
-    currentMode: SettingsStore.SplitTunnelMode,
-    currentExcluded: Set<String>,
-    currentIncluded: Set<String>,
-    onDismiss: () -> Unit,
-    onConfirm: (SettingsStore.SplitTunnelMode, Set<String>, Set<String>) -> Unit,
+internal fun SplitTunnelPicker(
+    settingsStore: SettingsStore,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current.applicationContext
-    var mode by rememberSaveable { mutableStateOf(currentMode) }
+    var mode by rememberSaveable { mutableStateOf(settingsStore.splitTunnelMode) }
     var excluded by
-        rememberSaveable(stateSaver = PackageSelectionSaver) { mutableStateOf(currentExcluded) }
+        rememberSaveable(stateSaver = PackageSelectionSaver) {
+            mutableStateOf(settingsStore.excludedApps)
+        }
     var included by
-        rememberSaveable(stateSaver = PackageSelectionSaver) { mutableStateOf(currentIncluded) }
+        rememberSaveable(stateSaver = PackageSelectionSaver) {
+            mutableStateOf(settingsStore.includedApps)
+        }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showSystemApps by rememberSaveable { mutableStateOf(false) }
     var loadAttempt by remember { mutableIntStateOf(0) }
     val selected = if (mode == SettingsStore.SplitTunnelMode.INCLUDE) included else excluded
+
+    fun persist() {
+        if (mode == SettingsStore.SplitTunnelMode.INCLUDE && included.isEmpty()) return
+        settingsStore.saveSplitTunneling(mode, excluded, included)
+    }
+
     fun toggle(pkg: String) {
         val next = if (pkg in selected) selected - pkg else selected + pkg
         if (mode == SettingsStore.SplitTunnelMode.INCLUDE) included = next else excluded = next
+        persist()
     }
     val appList by
         produceState<AppListState>(AppListState.Loading, context, loadAttempt) {
@@ -90,7 +107,7 @@ internal fun SplitTunnelDialog(
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
-                    AppLogger.w("SplitTunnelDialog", "Could not load installed apps", error)
+                    AppLogger.w("SplitTunnelPicker", "Could not load installed apps", error)
                     AppListState.Failed
                 }
         }
@@ -99,169 +116,153 @@ internal fun SplitTunnelDialog(
         remember(installedApps, searchQuery, showSystemApps, selected) {
             filterInstalledApps(installedApps, searchQuery, showSystemApps, selected)
         }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.settings_split_tunneling)) },
-        text = {
-            LazyColumn(Modifier.heightIn(max = 400.dp)) {
-                item(key = "split_header") {
-                    Column(Modifier.selectableGroup()) {
-                        SettingsStore.SplitTunnelMode.entries.forEach { option ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier =
-                                    Modifier.fillMaxWidth()
-                                        .selectable(
-                                            selected = mode == option,
-                                            role = Role.RadioButton,
-                                            onClick = { mode = option },
-                                        )
-                                        .heightIn(min = 48.dp),
-                            ) {
-                                RadioButton(selected = mode == option, onClick = null)
-                                Text(
-                                    stringResource(
-                                        if (option == SettingsStore.SplitTunnelMode.INCLUDE)
-                                            R.string.settings_include_selected_apps
-                                        else R.string.settings_exclude_selected_apps
-                                    )
-                                )
-                            }
-                        }
-                    }
-                    Text(
-                        stringResource(
-                            if (mode == SettingsStore.SplitTunnelMode.INCLUDE)
-                                R.string.settings_include_apps_help
-                            else R.string.settings_exclude_apps_help
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            pluralStringResource(
-                                R.plurals.settings_selected_apps_count,
-                                selected.size,
-                                selected.size,
-                            ),
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        TextButton(
-                            onClick = {
-                                if (mode == SettingsStore.SplitTunnelMode.INCLUDE)
-                                    included = emptySet()
-                                else excluded = emptySet()
-                            },
-                            enabled = selected.isNotEmpty(),
-                        ) {
-                            Text(stringResource(R.string.settings_clear_selection))
-                        }
-                    }
-                    Row(
+    Column(modifier) {
+        Column(Modifier.selectableGroup()) {
+            SettingsStore.SplitTunnelMode.entries.forEach { option ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier =
                         Modifier.fillMaxWidth()
-                            .toggleable(
-                                value = showSystemApps,
-                                role = Role.Switch,
-                                onValueChange = { showSystemApps = it },
+                            .selectable(
+                                selected = mode == option,
+                                role = Role.RadioButton,
+                                onClick = {
+                                    mode = option
+                                    persist()
+                                },
                             )
                             .heightIn(min = 48.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            stringResource(R.string.settings_show_system_apps),
-                            modifier = Modifier.weight(1f).padding(end = 8.dp),
-                        )
-                        Switch(checked = showSystemApps, onCheckedChange = null)
-                    }
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        label = { Text(stringResource(R.string.settings_search_apps)) },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    )
-                }
-                item(key = "split_status") {
-                    when {
-                        appList == AppListState.Loading ->
-                            CircularProgressIndicator(Modifier.padding(24.dp))
-                        appList == AppListState.Failed -> {
-                            Text(
-                                stringResource(R.string.settings_apps_load_failed),
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                            TextButton(onClick = { loadAttempt++ }) {
-                                Text(stringResource(R.string.retry))
-                            }
-                        }
-                        installedApps.isEmpty() -> Text(stringResource(R.string.settings_no_apps))
-                        filteredApps.isEmpty() ->
-                            Text(stringResource(R.string.settings_no_app_matches))
-                    }
-                }
-                if (appList is AppListState.Ready) {
-                    items(filteredApps, key = { it.packageName }) { app ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                                    .toggleable(
-                                        value = app.packageName in selected,
-                                        role = Role.Checkbox,
-                                        onValueChange = { toggle(app.packageName) },
-                                    )
-                                    .heightIn(min = 48.dp)
-                                    .padding(vertical = 2.dp),
-                        ) {
-                            Checkbox(checked = app.packageName in selected, onCheckedChange = null)
-                            Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                                Text(app.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Text(
-                                    app.packageName,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-                item(key = "split_footer") {
-                    if (mode == SettingsStore.SplitTunnelMode.INCLUDE && included.isEmpty()) {
-                        Text(
-                            stringResource(R.string.settings_include_app_required),
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
+                ) {
+                    RadioButton(selected = mode == option, onClick = null)
                     Text(
-                        stringResource(R.string.settings_lockdown_help),
-                        style = MaterialTheme.typography.bodySmall,
+                        stringResource(
+                            if (option == SettingsStore.SplitTunnelMode.INCLUDE)
+                                R.string.settings_include_selected_apps
+                            else R.string.settings_exclude_selected_apps
+                        )
                     )
                 }
             }
-        },
-        confirmButton = {
+        }
+        Text(
+            stringResource(
+                if (mode == SettingsStore.SplitTunnelMode.INCLUDE)
+                    R.string.settings_include_apps_help
+                else R.string.settings_exclude_apps_help
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                pluralStringResource(
+                    R.plurals.settings_selected_apps_count,
+                    selected.size,
+                    selected.size,
+                ),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+            )
             TextButton(
-                enabled =
-                    appList is AppListState.Ready &&
-                        (mode != SettingsStore.SplitTunnelMode.INCLUDE || included.isNotEmpty()),
-                onClick = { onConfirm(mode, excluded, included) },
+                onClick = {
+                    if (mode == SettingsStore.SplitTunnelMode.INCLUDE) {
+                        included = emptySet()
+                    } else {
+                        excluded = emptySet()
+                    }
+                    persist()
+                },
+                enabled = selected.isNotEmpty(),
             ) {
-                Text(stringResource(R.string.save))
+                Text(stringResource(R.string.settings_clear_selection))
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
-        },
-    )
+        }
+        Row(
+            Modifier.fillMaxWidth()
+                .toggleable(
+                    value = showSystemApps,
+                    role = Role.Switch,
+                    onValueChange = { showSystemApps = it },
+                )
+                .heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.settings_show_system_apps),
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+            )
+            Switch(checked = showSystemApps, onCheckedChange = null)
+        }
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            label = { Text(stringResource(R.string.settings_search_apps)) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        )
+        when {
+            appList == AppListState.Loading ->
+                CircularProgressIndicator(Modifier.padding(24.dp))
+            appList == AppListState.Failed -> {
+                Column {
+                    Text(
+                        stringResource(R.string.settings_apps_load_failed),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    TextButton(onClick = { loadAttempt++ }) {
+                        Text(stringResource(R.string.retry))
+                    }
+                }
+            }
+            installedApps.isEmpty() -> Text(stringResource(R.string.settings_no_apps))
+            filteredApps.isEmpty() -> Text(stringResource(R.string.settings_no_app_matches))
+        }
+        if (appList is AppListState.Ready) {
+            LazyColumn(Modifier.heightIn(max = 440.dp)) {
+                items(filteredApps, key = { it.packageName }) { app ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .toggleable(
+                                    value = app.packageName in selected,
+                                    role = Role.Checkbox,
+                                    onValueChange = { toggle(app.packageName) },
+                                )
+                                .heightIn(min = 48.dp)
+                                .padding(vertical = 2.dp),
+                    ) {
+                        Checkbox(checked = app.packageName in selected, onCheckedChange = null)
+                        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                            Text(app.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                app.packageName,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (mode == SettingsStore.SplitTunnelMode.INCLUDE && included.isEmpty()) {
+            Text(
+                stringResource(R.string.settings_include_app_required),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Text(
+            stringResource(R.string.settings_lockdown_help),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
 }
