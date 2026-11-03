@@ -1,9 +1,14 @@
 package com.vauth.foxyvpn.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
@@ -15,7 +20,6 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -29,6 +33,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -42,6 +48,7 @@ import com.vauth.foxyvpn.data.ProxyStateStore
 import com.vauth.foxyvpn.data.RECOMMENDED_COUNTRY_CODE
 import com.vauth.foxyvpn.data.ServerListClient
 import com.vauth.foxyvpn.data.model.VpnCountry
+import com.vauth.foxyvpn.data.model.displayName
 import com.vauth.foxyvpn.data.model.emojiFlag
 import com.vauth.foxyvpn.ui.ServerListViewModel
 import com.vauth.foxyvpn.ui.ServerPingState
@@ -153,83 +160,94 @@ fun ServerListScreen(
                         }
                     }
                 else ->
-                    LazyColumn(Modifier.selectableGroup()) {
+                    LazyColumn(
+                        Modifier.selectableGroup(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                    ) {
                         items(
                             rows,
                             key = { row ->
                                 when (row) {
                                     is LocationRow.RecommendedRow ->
-                                        "recommended:${row.country.code}"
-                                    is LocationRow.CountryHeader -> "country:${row.country.code}"
-                                    is LocationRow.CityRow ->
-                                        "city:${row.country.code}:${row.country.cities[row.cityIndex].code}"
-                                }
-                            },
-                        ) { row ->
-                            val selected = selectedState
-                            when (row) {
-                                is LocationRow.RecommendedRow ->
-                                    ListItem(
-                                        leadingContent = {
-                                            Icon(Icons.Filled.Public, contentDescription = null)
-                                        },
-                                        headlineContent = {
+                                    androidx.compose.foundation.layout.Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                                            .background(MaterialTheme.colorScheme.primaryContainer)
+                                            .selectable(
+                                                selected =
+                                                    row.country.code == selected?.countryCode,
+                                                role = Role.RadioButton,
+                                                onClick = {
+                                                    val candidates =
+                                                        ServerListClient.candidatesForCountry(
+                                                            countries,
+                                                            row.country.code,
+                                                        )
+                                                    val chosen = candidates.randomOrNull()
+                                                    if (chosen != null) {
+                                                        viewModel.selectCandidate(chosen)
+                                                        onServerSelected()
+                                                    } else {
+                                                        viewModel.setErrorMessage(
+                                                            context.getString(
+                                                                R.string.server_list_no_servers_country,
+                                                                row.country.name,
+                                                            )
+                                                        )
+                                                    }
+                                                },
+                                            )
+                                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(Icons.Filled.Public, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                                        androidx.compose.foundation.layout.Spacer(Modifier.width(12.dp))
+                                        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
                                             Text(
                                                 stringResource(R.string.server_list_recommended_title),
                                                 fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
                                             )
-                                        },
-                                        supportingContent = {
-                                            Text(stringResource(R.string.server_list_recommended_desc))
-                                        },
-                                        trailingContent = {
-                                            if (row.country.code == selected?.countryCode) {
-                                                Icon(
-                                                    Icons.Filled.CheckCircle,
-                                                    contentDescription = null,
-                                                )
-                                            }
-                                        },
-                                        modifier =
-                                            Modifier.padding(horizontal = 8.dp)
-                                                .selectable(
-                                                    selected =
-                                                        row.country.code == selected?.countryCode,
-                                                    role = Role.RadioButton,
-                                                    onClick = {
-                                                        val candidates =
-                                                            ServerListClient.candidatesForCountry(
-                                                                countries,
-                                                                row.country.code,
-                                                            )
-                                                        val chosen = candidates.randomOrNull()
-                                                        if (chosen != null) {
-                                                            viewModel.selectCandidate(chosen)
-                                                            onServerSelected()
-                                                        } else {
-                                                            viewModel.setErrorMessage(
-                                                                context.getString(
-                                                                    R.string.server_list_no_servers_country,
-                                                                    row.country.name,
-                                                                )
-                                                            )
-                                                        }
-                                                    },
-                                                ),
-                                    )
+                                            Text(
+                                                stringResource(R.string.server_list_recommended_desc),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                                            )
+                                        }
+                                        if (row.country.code == selected?.countryCode) {
+                                            Icon(
+                                                Icons.Filled.CheckCircle,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            )
+                                        }
+                                    }
                                 is LocationRow.CountryHeader ->
-                                    ListItem(
-                                        leadingContent = {
+                                    androidx.compose.foundation.layout.Row(
+                                        Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .size(38.dp)
+                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
                                             Text(
                                                 text = row.country.emojiFlag,
-                                                style = MaterialTheme.typography.titleLarge,
+                                                style = MaterialTheme.typography.titleMedium,
                                             )
-                                        },
-                                        headlineContent = {
-                                            Text(row.country.name, fontWeight = FontWeight.SemiBold)
-                                        },
-                                        modifier = Modifier.padding(horizontal = 8.dp),
-                                    )
+                                        }
+                                        androidx.compose.foundation.layout.Spacer(Modifier.width(12.dp))
+                                        Text(
+                                            row.country.displayName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    }
                                 is LocationRow.CityRow -> {
                                     val city = row.country.cities[row.cityIndex]
                                     val available =
@@ -241,7 +259,6 @@ fun ServerListScreen(
                                             )
                                         }
                                     val serverCount = available.size
-
                                     val pingKey = "${row.country.code}:${city.code}"
                                     val pingMs = state.pingResults[pingKey]
                                     val pingState =
@@ -255,9 +272,71 @@ fun ServerListScreen(
                                         )
                                     }
 
-                                    ListItem(
-                                        headlineContent = { Text(city.code) },
-                                        supportingContent = {
+                                    val isSelected =
+                                        row.country.code == selected?.countryCode &&
+                                            city.code == selected?.cityCode
+                                    androidx.compose.foundation.layout.Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceContainer)
+                                            .then(
+                                                if (isSelected) {
+                                                    Modifier.border(
+                                                        1.5.dp,
+                                                        MaterialTheme.colorScheme.primary,
+                                                        androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+                                                    )
+                                                } else {
+                                                    Modifier
+                                                },
+                                            )
+                                            .selectable(
+                                                selected = isSelected,
+                                                role = Role.RadioButton,
+                                                onClick = {
+                                                    val candidates =
+                                                        ServerListClient.candidatesForCity(
+                                                            countries,
+                                                            row.country.code,
+                                                            city.code,
+                                                        )
+                                                    val chosen = candidates.randomOrNull()
+                                                    if (chosen != null) {
+                                                        viewModel.selectCandidate(chosen)
+                                                        onServerSelected()
+                                                    } else {
+                                                        viewModel.setErrorMessage(
+                                                            context.getString(
+                                                                R.string.server_list_no_servers_city,
+                                                                city.code,
+                                                            )
+                                                        )
+                                                    }
+                                                },
+                                            )
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .size(38.dp)
+                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                text = row.country.emojiFlag,
+                                                style = MaterialTheme.typography.titleMedium,
+                                            )
+                                        }
+                                        androidx.compose.foundation.layout.Spacer(Modifier.width(12.dp))
+                                        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
+                                            Text(
+                                                com.vauth.foxyvpn.ui.map.CityCoordinates.nameOf(city.code) ?: city.code,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
                                             val primaryHostname = available.firstOrNull()?.host
                                             val serverLabel =
                                                 when {
@@ -271,60 +350,48 @@ fun ServerListScreen(
                                                         )
                                                     else -> primaryHostname
                                                 }
-                                            val pingLabel =
-                                                when {
-                                                    pingMs != null ->
-                                                        stringResource(
-                                                            R.string.server_list_tcp_ms,
-                                                            pingMs,
-                                                        )
-                                                    pingState == ServerPingState.FAILED ->
-                                                        stringResource(R.string.server_list_tcp_unavailable)
-                                                    else ->
-                                                        stringResource(R.string.server_list_checking_tcp)
-                                                }
-                                            Text("$serverLabel \u2022 $pingLabel")
-                                        },
-                                        trailingContent = {
-                                            if (
-                                                row.country.code == selected?.countryCode &&
-                                                    city.code == selected?.cityCode
-                                            ) {
-                                                Icon(
-                                                    Icons.Filled.CheckCircle,
-                                                    contentDescription = null,
-                                                )
+                                            Text(
+                                                serverLabel,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        val pingColor = when {
+                                            pingMs == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            pingMs < 150 -> Color(0xFF34A853)
+                                            pingMs < 300 -> Color(0xFFF9AB00)
+                                            else -> MaterialTheme.colorScheme.error
+                                        }
+                                        val pingLabel =
+                                            when {
+                                                pingMs != null ->
+                                                    stringResource(R.string.server_list_tcp_ms, pingMs)
+                                                pingState == ServerPingState.FAILED ->
+                                                    stringResource(R.string.server_list_tcp_unavailable)
+                                                else -> stringResource(R.string.server_list_checking_tcp)
                                             }
-                                        },
-                                        modifier =
-                                            Modifier.padding(start = 24.dp, end = 8.dp)
-                                                .selectable(
-                                                    selected =
-                                                        row.country.code == selected?.countryCode &&
-                                                            city.code == selected?.cityCode,
-                                                    role = Role.RadioButton,
-                                                    onClick = {
-                                                        val candidates =
-                                                            ServerListClient.candidatesForCity(
-                                                                countries,
-                                                                row.country.code,
-                                                                city.code,
-                                                            )
-                                                        val chosen = candidates.randomOrNull()
-                                                        if (chosen != null) {
-                                                            viewModel.selectCandidate(chosen)
-                                                            onServerSelected()
-                                                        } else {
-                                                            viewModel.setErrorMessage(
-                                                                context.getString(
-                                                                    R.string.server_list_no_servers_city,
-                                                                    city.code,
-                                                                )
-                                                            )
-                                                        }
-                                                    },
-                                                ),
-                                    )
+                                        Box(
+                                            Modifier
+                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                                                .background(pingColor.copy(alpha = 0.14f))
+                                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                        ) {
+                                            Text(
+                                                pingLabel,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = pingColor,
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
+                                            Icon(
+                                                Icons.Filled.CheckCircle,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -98,10 +98,9 @@ import kotlinx.coroutines.delay
  * §4.1–4.15, Zed UiPage group order) against the fork's appearance
  * model. Every row writes a real pref and the reader of each pref is
  * live in the app (theme, Home, dock, service notification, server
- * list). Old-design-only groups (connect-button style, traffic
- * tiles/personalize) do NOT render under Bento — they arrive with
- * the Zed Old design in Phase B2; the design picker therefore offers
- * Bento only in this preview.
+ * list). Phase B2: the picker offers all three Zed designs (all
+ * built), and the Old-design-only groups (connect style, traffic
+ * tiles) render when design = Old.
  */
 @Composable
 fun InterfacePage(
@@ -123,6 +122,7 @@ fun InterfacePage(
         onBack = onBack,
     ) {
         // --- Design ------------------------------------------------------
+        // B2: all three Zed designs are built; the picker tells the truth.
         BentoGroupLabel(s("Design"))
         Column(
             Modifier.padding(horizontal = 16.dp).clip(RoundedCornerShape(26.dp))
@@ -130,31 +130,92 @@ fun InterfacePage(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(40.dp).clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(20.dp))
-                }
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text("Bento", style = MaterialTheme.typography.bodyLargeEmphasized)
-                    Text(
-                        s("The current design"),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Text(
+                s("App design"),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                s("The look of the whole app: home, type, shapes and motion. Colours stay separate."),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                for (design in SettingsStore.AppDesign.entries) {
+                    DesignCard(
+                        design = design,
+                        selected = appearance.appDesign == design,
+                        onClick = { appearance.updateAppDesign(design) },
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
         }
-        SettingsGroup(null, listOf {
-            SettingsInfoRow(
-                s("More designs"),
-                s("The Pixel and Old designs arrive in a later update."),
-            )
-        })
+        if (appearance.appDesign != SettingsStore.AppDesign.OLD) {
+            SettingsGroup(null, listOf {
+                SettingsInfoRow(
+                    s("App design"),
+                    s("Button, tile and card styles belong to the Old design. Pick Old to change them."),
+                )
+            })
+        } else {
+            // Old-design groups (§4.11/§4.15) — visible only under Old,
+            // and every row drives the Old home for real.
+            SettingsGroup(s("Connect"), listOf {
+                SettingsChoiceRow(
+                    title = s("Connect style"),
+                    options = com.vauth.foxyvpn.ui.theme.ConnectButtonStyle.entries.map { it.label },
+                    selected = appearance.connectButtonStyle.label,
+                    onSelect = { label ->
+                        appearance.updateConnectButtonStyle(
+                            com.vauth.foxyvpn.ui.theme.ConnectButtonStyle.entries.first { it.label == label },
+                        )
+                    },
+                )
+            })
+            SettingsGroup(s("Traffic"), listOf<@Composable () -> Unit>(
+                {
+                    SettingsSwitchRow(
+                        title = s("Traffic tiles"),
+                        checked = appearance.showTrafficTiles,
+                        onCheckedChange = { appearance.updateShowTrafficTiles(it) },
+                    )
+                },
+                {
+                    SettingsSwitchRow(
+                        title = s("Traffic tiles above hero"),
+                        checked = appearance.trafficTilesAboveHero,
+                        onCheckedChange = { appearance.updateTrafficTilesAboveHero(it) },
+                    )
+                },
+                {
+                    SettingsChoiceRow(
+                        title = s("Traffic card style"),
+                        options = com.vauth.foxyvpn.ui.theme.TrafficCardStyle.entries.map { it.label },
+                        selected = appearance.trafficCardStyle.label,
+                        onSelect = { label ->
+                            appearance.updateTrafficCardStyle(
+                                com.vauth.foxyvpn.ui.theme.TrafficCardStyle.entries.first { it.label == label },
+                            )
+                        },
+                    )
+                },
+                {
+                    SettingsChoiceRow(
+                        title = s("Traffic tile size"),
+                        options = com.vauth.foxyvpn.ui.theme.TrafficTileSize.entries.map { it.label },
+                        selected = appearance.trafficTileSize.label,
+                        onSelect = { label ->
+                            appearance.updateTrafficTileSize(
+                                com.vauth.foxyvpn.ui.theme.TrafficTileSize.entries.first { it.label == label },
+                            )
+                        },
+                    )
+                },
+            ))
+        }
 
         // --- Look --------------------------------------------------------
         SettingsGroup(s("Look"), listOf<@Composable () -> Unit>({ PalettePicker(appearance) }) + listOf<@Composable () -> Unit>(
@@ -1156,5 +1217,104 @@ fun NavBarPage(
                 s("Home and Settings always stay on the bar."),
             )
         })
+    }
+}
+
+/**
+ * One design card in the App-design picker: a miniature phone preview
+ * drawn from the design's own shapes (Bento bars, the Pixel door, the
+ * Old hero), a lime outline + check when selected, and the label.
+ */
+@Composable
+private fun DesignCard(
+    design: SettingsStore.AppDesign,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val cs = MaterialTheme.colorScheme
+    val lime = Color(0xFFC7F24E)
+    Column(
+        modifier.clickable(role = Role.Button, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(104.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFF101014))
+                .then(
+                    if (selected) {
+                        Modifier.border(2.dp, lime, RoundedCornerShape(18.dp))
+                    } else {
+                        Modifier.border(1.dp, cs.onSurface.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
+                    },
+                )
+                .padding(9.dp),
+        ) {
+            when (design) {
+                SettingsStore.AppDesign.BENTO -> Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Box(
+                        Modifier.fillMaxWidth().height(24.dp).clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF3D2A8F)),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Box(Modifier.weight(1f).height(16.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF1D3A4A)))
+                        Box(Modifier.weight(1f).height(16.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF2A2350)))
+                    }
+                    Box(
+                        Modifier.fillMaxWidth().height(18.dp).clip(RoundedCornerShape(9.dp))
+                            .background(lime),
+                    )
+                }
+                SettingsStore.AppDesign.PIXEL -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier.size(44.dp)
+                            .clip(com.vauth.foxyvpn.ui.bento.PolygonShape(androidx.compose.material3.MaterialShapes.Cookie12Sided))
+                            .background(lime),
+                    )
+                }
+                SettingsStore.AppDesign.OLD -> Column(
+                    Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Box(
+                        Modifier.size(40.dp).clip(CircleShape)
+                            .background(
+                                androidx.compose.ui.graphics.Brush.linearGradient(
+                                    listOf(Color(0xFF7A5CFF), Color(0xFFFF5FA2)),
+                                ),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("F", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Box(
+                        Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(5.dp))
+                            .background(Color(0xFF3D2A8F)),
+                    )
+                }
+            }
+            if (selected) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).size(20.dp).clip(CircleShape).background(lime),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Check, contentDescription = null,
+                        tint = Color(0xFF101014), modifier = Modifier.size(13.dp),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            design.label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) lime else cs.onSurfaceVariant,
+        )
     }
 }

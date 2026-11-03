@@ -1,6 +1,33 @@
 package com.vauth.foxyvpn.ui.settings
 
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.Icon
+import IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -176,10 +203,158 @@ fun SettingsHubScreen(
         ),
     )
 
-    BentoHub(
-        entries = entries,
-        layoutEncoded = bento.tiles,
-        onLayoutChange = { appearance.updateBentoTiles(it) },
-        onBack = onBack,
-    )
+    // Design dispatch (B2): the tile board is the Bento design's root;
+    // Pixel and Old get Zed's RootPage anatomy — a grouped list over
+    // the SAME entries, so every destination exists under every design.
+    if (appearance.appDesign == SettingsStore.AppDesign.BENTO) {
+        BentoHub(
+            entries = entries,
+            layoutEncoded = bento.tiles,
+            onLayoutChange = { appearance.updateBentoTiles(it) },
+            onBack = onBack,
+        )
+    } else {
+        SettingsRootList(
+            entries = entries,
+            accountSummary = entries.firstOrNull { it.key == BentoTiles.ACCOUNTS }?.summary,
+            onBack = onBack,
+        )
+    }
+}
+
+/**
+ * The settings root for the Pixel/Old designs (Zed's RootPage
+ * anatomy): profile card, the account card, then every destination as
+ * a grouped row (art icon in a colored square, title, live summary,
+ * chevron), and the version footer.
+ */
+@Composable
+private fun SettingsRootList(
+    entries: List<BentoHubEntry>,
+    accountSummary: String?,
+    onBack: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val scroll = rememberScrollState()
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(cs.surface)
+            .verticalScroll(scroll)
+            .padding(horizontal = 16.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = s("Back"),
+                )
+            }
+            Text(
+                s("Settings"),
+                style = MaterialTheme.typography.headlineSmall,
+            )
+        }
+        // Profile card.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(26.dp))
+                .background(cs.primaryContainer)
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+        ) {
+            Text(
+                "FoxyVPN",
+                style = MaterialTheme.typography.titleLarge,
+                color = cs.onPrimaryContainer,
+            )
+            Text(
+                "v${BuildConfig.VERSION_NAME}" +
+                    (accountSummary?.let { " · $it" } ?: ""),
+                style = MaterialTheme.typography.bodyMedium,
+                color = cs.onPrimaryContainer.copy(alpha = 0.8f),
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        // Grouped destination rows in one card stack.
+        val containers = listOf(
+            cs.primaryContainer, cs.secondaryContainer, cs.tertiaryContainer,
+            cs.surfaceContainerHigh,
+        )
+        val contents = listOf(
+            cs.onPrimaryContainer, cs.onSecondaryContainer, cs.onTertiaryContainer,
+            cs.onSurface,
+        )
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(26.dp))
+                .background(cs.surfaceContainerHigh),
+        ) {
+            entries.forEachIndexed { index, item ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(role = Role.Button, onClick = item.onOpen)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(containers[index % containers.size]),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            item.art.icon,
+                            contentDescription = null,
+                            tint = contents[index % contents.size],
+                            modifier = Modifier.size(21.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            item.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = cs.onSurface,
+                        )
+                        Text(
+                            item.summary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                    Icon(
+                        Icons.Filled.ChevronRight,
+                        contentDescription = null,
+                        tint = cs.onSurfaceVariant,
+                    )
+                }
+                if (index < entries.lastIndex) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 66.dp, end = 14.dp)
+                            .height(1.dp)
+                            .background(cs.onSurface.copy(alpha = 0.06f)),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "v${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(24.dp))
+    }
 }
