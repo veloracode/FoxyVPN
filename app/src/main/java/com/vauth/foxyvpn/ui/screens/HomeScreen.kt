@@ -7,6 +7,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -39,6 +40,9 @@ import com.vauth.foxyvpn.vpn.FoxyVpnService
 import com.vauth.foxyvpn.vpn.PingUtil
 import com.vauth.foxyvpn.vpn.TunnelHealth
 import java.text.SimpleDateFormat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import java.util.Date
 import java.util.Locale
 
@@ -106,11 +110,29 @@ fun HomeScreen(
             )
         }
     }
-    val picks = remember(serverState.countries, serverState.pingResults) {
+    // B2 smoothness: probe results stream into the view-model state one
+    // country at a time (~35 updates in the first seconds on Home).
+    // Feeding them straight into `picks` rebuilt the whole Home state —
+    // and recomposed the entire Home surface — per result. Publish them
+    // throttled instead: the collector conflates bursts and republishes
+    // at most every 600 ms while results stream; the final value always
+    // lands. The picks list (and Home) now settles a handful of times,
+    // not once per country.
+    var publishedPings by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    LaunchedEffect(serverListModel) {
+        serverListModel.state
+            .map { it.pingResults }
+            .distinctUntilChanged()
+            .collect { results ->
+                publishedPings = results
+                delay(600)
+            }
+    }
+    val picks = remember(serverState.countries, publishedPings) {
         serverState.countries.mapNotNull { country ->
             val candidates = ServerListClient.candidatesForCountry(serverState.countries, country.code)
             val first = candidates.firstOrNull() ?: return@mapNotNull null
-            val ping = serverState.pingResults["${country.code}:${first.cityCode}"]
+            val ping = publishedPings["${country.code}:${first.cityCode}"]
             BentoServerPick(
                 id = "${country.code}:${first.cityCode}",
                 name = country.displayName,

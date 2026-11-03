@@ -18,8 +18,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.vauth.foxyvpn.data.AccountRepository
+import com.vauth.foxyvpn.data.AddAccountFlowStore
 import com.vauth.foxyvpn.data.FxaAuthRepository
 import com.vauth.foxyvpn.data.model.RuntimeAuth
 import com.vauth.foxyvpn.ui.l10n.s
@@ -64,6 +66,7 @@ fun AddAccountScreen(
     onFinished: (String) -> Unit,
     onCanceled: () -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var startUrl by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -79,8 +82,33 @@ fun AddAccountScreen(
 
     // Preparation: wipe the FxA web session so the browser prompts for
     // credentials; only open it once the wipe has landed.
+    //
+    // B2 exception (the preview defect): if a previous add-account flow
+    // reached the browser and its FxA session is still alive — the user
+    // left mid-sign-in to fetch the email code and the process died —
+    // RESUME on that session instead of wiping it. The wipe is what
+    // killed the interrupted flow: FxA's verification step lives in
+    // exactly the web state the wipe destroys. A genuinely fresh entry
+    // (no pending record, or a dead session) keeps the original wipe,
+    // so the same-account trap this defends against stays defended.
     LaunchedEffect(Unit) {
-        clearFxAWebState { startUrl = authRepository.getBrowserLoginUrl() }
+        val pending = AddAccountFlowStore.pendingStage(context)
+        val alive = pending != null && fxAWebSessionAlive()
+        when (AddAccountFlowStore.decideEntry(pending, alive)) {
+            AddAccountFlowStore.Entry.RESUME -> {
+                startUrl = authRepository.getBrowserLoginUrl()
+            }
+            AddAccountFlowStore.Entry.FRESH -> {
+                AddAccountFlowStore.begin(context)
+                clearFxAWebState { startUrl = authRepository.getBrowserLoginUrl() }
+            }
+        }
+    }
+
+    // Record that the flow reached the browser, so an interruption
+    // from here on is resumable (see AddAccountFlowStore).
+    LaunchedEffect(startUrl) {
+        if (startUrl != null) AddAccountFlowStore.markBrowserOpen(context)
     }
 
     fun finish(buildAuth: suspend () -> RuntimeAuth) {
@@ -104,7 +132,8 @@ fun AddAccountScreen(
             outcome
                 .onSuccess { result ->
                     // Whatever happened, no live FxA web session is
-                    // left behind.
+                    // left behind, and the flow record is done.
+                    AddAccountFlowStore.clear(context)
                     clearFxAWebState()
                     if (result == null) {
                         onFinished(msgUnidentified)
@@ -135,6 +164,7 @@ fun AddAccountScreen(
                 finish { authRepository.exchangeBrowserSessionToken(sessionToken) }
             },
             onCanceled = {
+                AddAccountFlowStore.clear(context)
                 clearFxAWebState()
                 onCanceled()
             },

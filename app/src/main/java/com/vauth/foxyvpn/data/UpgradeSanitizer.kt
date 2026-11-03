@@ -44,7 +44,7 @@ internal object UpgradeSanitizer {
     const val KEY_REVISION = "state_sanitized_rev"
 
     /** Bump to force another one-time pass in a future release. */
-    const val CURRENT_REVISION = 1
+    const val CURRENT_REVISION = 2
 
     /**
      * Everything TunnelSettings reads from plain prefs that can alter the
@@ -61,6 +61,12 @@ internal object UpgradeSanitizer {
         "custom_edge_address",
         // Rank 5: chains proxy-out through a (possibly dead) upstream proxy.
         "upstream_proxy_enabled",
+        // Rev 2 (B2): legacy boolean that feeds the derivation of the
+        // credentials-file upstream_review_required flag — with the flag
+        // armed, tunnelSnapshot() refuses to build a config at all. No
+        // build of this fork (v1 line or the v2 port) ever writes this
+        // key; removing it is pure defense in depth for the connect path.
+        "upstream_proxy_tls",
         // Extra vector (missed by the diagnosis): v1-era default MTU was
         // 1400, upstream's is 1280; a persisted 1400 black-holes large
         // packets inside the QUIC/MASQUE tunnel while small ones pass.

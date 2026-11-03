@@ -41,6 +41,7 @@ object L10n {
         "Behaviour" to "رفتار",
         "Best performance" to "بهترین عملکرد",
         "Block ads" to "مسدودسازی تبلیغات",
+        "Drop requests matching the ad-domain list" to "درخواست‌های منطبق با فهرست دامنه‌های تبلیغاتی حذف می‌شوند",
         "Board" to "تخته",
         "Cancel" to "لغو",
         "Card corners" to "گوشه‌های کارت",

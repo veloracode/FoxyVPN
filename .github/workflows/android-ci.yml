@@ -16,6 +16,8 @@ concurrency:
 env:
   LIBBOX_URL: https://github.com/Vauth/sing-box/releases/download/v1.15.0-foxy-masque.2/libbox.aar
   LIBBOX_SHA256: f1b59f4fab207b4c19f8ea3d145bc4dd0e834a530081d0dc045f4b795d6eac0b
+  DLC_COMMIT: 476b009f4d0176426958b3fdadf87f2a2688baa5
+  ADS_RULES_SHA256: edca4e997c5610ad6d6a99154a523e066c46401191a71f340d2e65c42a087727
 
 jobs:
   build:
@@ -38,6 +40,16 @@ jobs:
           curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 \
             --proto '=https' --proto-redir '=https' -o app/libs/libbox.aar "$LIBBOX_URL"
           echo "$LIBBOX_SHA256  app/libs/libbox.aar" | sha256sum --check --strict
+      - name: Generate ad-block domain asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 \
+            --proto '=https' --proto-redir '=https' -o /tmp/dlc.tar.gz "https://codeload.github.com/v2fly/domain-list-community/tar.gz/$DLC_COMMIT"
+          mkdir -p /tmp/dlc
+          tar xzf /tmp/dlc.tar.gz -C /tmp/dlc --strip-components=1
+          python3 tools/build_ads_list.py /tmp/dlc app/src/main/assets/ads_rules.json
+          echo "$ADS_RULES_SHA256  app/src/main/assets/ads_rules.json" | sha256sum --check --strict
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
@@ -82,6 +94,16 @@ jobs:
           curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 \
             --proto '=https' --proto-redir '=https' -o app/libs/libbox.aar "$LIBBOX_URL"
           echo "$LIBBOX_SHA256  app/libs/libbox.aar" | sha256sum --check --strict
+      - name: Generate ad-block domain asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 \
+            --proto '=https' --proto-redir '=https' -o /tmp/dlc.tar.gz "https://codeload.github.com/v2fly/domain-list-community/tar.gz/$DLC_COMMIT"
+          mkdir -p /tmp/dlc
+          tar xzf /tmp/dlc.tar.gz -C /tmp/dlc --strip-components=1
+          python3 tools/build_ads_list.py /tmp/dlc app/src/main/assets/ads_rules.json
+          echo "$ADS_RULES_SHA256  app/src/main/assets/ads_rules.json" | sha256sum --check --strict
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2

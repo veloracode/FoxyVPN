@@ -2,6 +2,8 @@ package com.vauth.foxyvpn.ui.screens
 
 import android.webkit.CookieManager
 import android.webkit.WebStorage
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * Clears the FxA web state: cookies, plus the site storage of the FxA
@@ -31,5 +33,29 @@ fun clearFxAWebState(onDone: () -> Unit = {}) {
     manager.removeAllCookies {
         runCatching { manager.flush() }
         onDone()
+    }
+}
+
+/**
+ * Whether an FxA web session plausibly survived (cookies present for
+ * the FxA origin, or site storage still held for it). Used by the
+ * add-account flow to decide between resuming an interrupted sign-in
+ * and wiping for a fresh one (B2). A false negative costs one fresh
+ * sign-in; a false positive just lands on FxA's own sign-in page —
+ * both are safe, so the check stays cheap and best-effort.
+ */
+suspend fun fxAWebSessionAlive(): Boolean {
+    val cookies = runCatching {
+        CookieManager.getInstance().getCookie("https://accounts.firefox.com")
+    }.getOrNull()
+    if (!cookies.isNullOrBlank()) return true
+    return suspendCancellableCoroutine { cont ->
+        runCatching {
+            WebStorage.getInstance().getOrigins { origins ->
+                if (cont.isActive) {
+                    cont.resume(origins?.keys?.any { it.contains("accounts.firefox.com") } == true)
+                }
+            }
+        }.onFailure { if (cont.isActive) cont.resume(false) }
     }
 }

@@ -100,6 +100,19 @@ class SettingsStore(context: Context) {
             prefs.edit().putBoolean("bypass_local_network", value).apply()
         }
 
+    /**
+     * Block ads (B2, user-ordered; mirrors ZedSecure's Routing-page
+     * toggle of the same name). Default OFF: with it off the generated
+     * sing-box config is byte-identical to the pre-feature build; with
+     * it on, the builder adds exactly one inline rule-set built from
+     * the bundled category-ads-all domain list plus one reject rule.
+     */
+    var blockAds: Boolean
+        get() = prefs.getBoolean("block_ads", false)
+        set(value) {
+            prefs.edit().putBoolean("block_ads", value).apply()
+        }
+
     var automaticRecovery: Boolean
         get() = prefs.getBoolean("automatic_recovery", false)
         set(value) {

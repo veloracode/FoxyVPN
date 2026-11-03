@@ -1,5 +1,6 @@
 package com.vauth.foxyvpn.vpn
 
+import com.vauth.foxyvpn.data.AdBlockLists
 import com.vauth.foxyvpn.data.SettingsStore
 import com.vauth.foxyvpn.data.TunnelSettings
 import com.vauth.foxyvpn.data.model.ProxyCandidate
@@ -33,12 +34,16 @@ object SingBoxConfigBuilder {
     private const val DEFAULT_TUN_DNS_IPV4 = "172.19.0.2"
     private const val DEFAULT_TUN_DNS_IPV6 = "fdfe:dcba:9876::2"
 
+    /** Tag of the inline rule-set added when Block ads is on (B2). */
+    const val ADS_RULE_SET_TAG = "ads-block"
+
     fun build(
         primaryCandidate: ProxyCandidate,
         settings: TunnelSettings,
         bearerToken: String = "",
         appPackageName: String? = null,
         controllerSecret: String,
+        adBlockLists: AdBlockLists? = null,
     ): String {
         require(
             primaryCandidate.port in 1..65_535 &&
@@ -369,6 +374,12 @@ object SingBoxConfigBuilder {
 
         root.put("outbounds", outbounds)
 
+        // Block ads (B2): active only when the toggle is on AND the
+        // bundled lists loaded. Otherwise NOTHING below emits anything,
+        // keeping the generated config byte-identical to the
+        // pre-feature build (criterion A3, proven by fixture diff).
+        val adsActive =
+            settings.blockAds && adBlockLists != null && !adBlockLists.isEmpty
         val route =
             JSONObject().apply {
                 put(
@@ -392,6 +403,14 @@ object SingBoxConfigBuilder {
                                 put("action", "reject")
                             }
                         )
+                        if (adsActive) {
+                            put(
+                                JSONObject().apply {
+                                    put("rule_set", JSONArray().put(ADS_RULE_SET_TAG))
+                                    put("action", "reject")
+                                }
+                            )
+                        }
                         if (settings.bypassLocalNetwork) {
                             put(
                                 JSONObject().apply {
@@ -411,6 +430,37 @@ object SingBoxConfigBuilder {
                         put(JSONObject().apply { put("outbound", "proxy-out") })
                     },
                 )
+                if (adsActive) {
+                    val lists = requireNotNull(adBlockLists)
+                    put(
+                        "rule_set",
+                        JSONArray().put(
+                            JSONObject().apply {
+                                put("type", "inline")
+                                put("tag", ADS_RULE_SET_TAG)
+                                put(
+                                    "rules",
+                                    JSONArray().put(
+                                        JSONObject().apply {
+                                            if (lists.domainSuffix.isNotEmpty()) {
+                                                put("domain_suffix", JSONArray(lists.domainSuffix))
+                                            }
+                                            if (lists.domain.isNotEmpty()) {
+                                                put("domain", JSONArray(lists.domain))
+                                            }
+                                            if (lists.domainRegex.isNotEmpty()) {
+                                                put("domain_regex", JSONArray(lists.domainRegex))
+                                            }
+                                            if (lists.domainKeyword.isNotEmpty()) {
+                                                put("domain_keyword", JSONArray(lists.domainKeyword))
+                                            }
+                                        }
+                                    ),
+                                )
+                            }
+                        ),
+                    )
+                }
                 put("final", "proxy-out")
                 put("auto_detect_interface", true)
                 put("find_process", false)

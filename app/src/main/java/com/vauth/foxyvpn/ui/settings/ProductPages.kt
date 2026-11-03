@@ -217,6 +217,7 @@ fun DnsSettingsPage(settingsStore: SettingsStore, onBack: () -> Unit) {
 @Composable
 fun RoutingSettingsPage(settingsStore: SettingsStore, onBack: () -> Unit) {
     var bypassLocalNetwork by remember { mutableStateOf(settingsStore.bypassLocalNetwork) }
+    var blockAds by remember { mutableStateOf(settingsStore.blockAds) }
     val proxyOnlyMode = settingsStore.proxyOnlyMode
     SettingsPageScaffold(
         title = s("Routing"),
@@ -232,6 +233,19 @@ fun RoutingSettingsPage(settingsStore: SettingsStore, onBack: () -> Unit) {
                 onCheckedChange = {
                     settingsStore.bypassLocalNetwork = it
                     bypassLocalNetwork = it
+                },
+            )
+            // Block ads (B2, user-ordered): same placement as ZedSecure's
+            // own toggle — the Routing page's mode card, under the mode
+            // rows. Applies on next connection (it changes the
+            // generated config, like bypass-local above).
+            SettingsSwitchRow(
+                title = s("Block ads"),
+                description = s("Drop requests matching the ad-domain list"),
+                checked = blockAds,
+                onCheckedChange = {
+                    settingsStore.blockAds = it
+                    blockAds = it
                 },
             )
         })

@@ -29,6 +29,8 @@ data class TunnelSettings(
     val upstreamProxyUsername: String,
     val utlsFingerprint: SettingsStore.UtlsFingerprint,
     val bypassLocalNetwork: Boolean = true,
+    /** Block ads toggle (B2); the domain lists travel separately. */
+    val blockAds: Boolean = false,
 ) {
     override fun toString() =
         "TunnelSettings(proxyOnlyMode=$proxyOnlyMode, httpVersion=$httpVersion)"
@@ -42,6 +44,7 @@ fun SettingsStore.tunnelSnapshot(): TunnelSettings =
         TunnelSettings(
             automaticRecovery = automaticRecovery,
             bypassLocalNetwork = bypassLocalNetwork,
+            blockAds = blockAds,
             dnsProvider = dnsProvider,
             effectiveCustomEdgeAddress = effectiveCustomEdgeAddress,
             effectiveDohUrl = effectiveDohUrl,

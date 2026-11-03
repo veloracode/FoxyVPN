@@ -722,6 +722,15 @@ class FoxyVpnService : VpnService() {
 
                 startCredentialExpiryWatchdog(myGeneration)
 
+                // Block ads (B2): the bundled lists load only when the
+                // toggle is on; a load failure builds without the rule
+                // (fail-open — see AdBlockLists).
+                val adBlockLists =
+                    if (tunnelSettings.blockAds) {
+                        com.vauth.foxyvpn.data.AdBlockLists.load(applicationContext)
+                    } else {
+                        null
+                    }
                 val configContent =
                     SingBoxConfigBuilder.build(
                         primaryCandidate = primaryCandidate,
@@ -729,6 +738,7 @@ class FoxyVpnService : VpnService() {
                         bearerToken = pass.token,
                         appPackageName = packageName,
                         controllerSecret = controllerSecret,
+                        adBlockLists = adBlockLists,
                     )
                 ensureGenerationCurrent(myGeneration)
                 ensureLibboxSetup()
