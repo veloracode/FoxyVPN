@@ -8,6 +8,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -23,9 +25,25 @@ import com.vauth.foxyvpn.ui.screens.HomeScreen
 import com.vauth.foxyvpn.ui.screens.LoginScreen
 import com.vauth.foxyvpn.ui.screens.LogsScreen
 import com.vauth.foxyvpn.ui.screens.ServerListScreen
-import com.vauth.foxyvpn.ui.screens.SettingsScreen
 import com.vauth.foxyvpn.ui.screens.SplashScreen
+import com.vauth.foxyvpn.ui.bento.BentoTiles
+import com.vauth.foxyvpn.ui.settings.AboutSettingsPage
+import com.vauth.foxyvpn.ui.settings.AdvancedSettingsPage
+import com.vauth.foxyvpn.ui.settings.AntiBlockSettingsPage
+import com.vauth.foxyvpn.ui.settings.CoreSettingsPage
+import com.vauth.foxyvpn.ui.settings.DnsSettingsPage
+import com.vauth.foxyvpn.ui.settings.FragmentSettingsPage
+import com.vauth.foxyvpn.ui.settings.InterfacePage
+import com.vauth.foxyvpn.ui.settings.ModeSettingsPage
+import com.vauth.foxyvpn.ui.settings.MuxSettingsPage
+import com.vauth.foxyvpn.ui.settings.NavBarPage
+import com.vauth.foxyvpn.ui.settings.PerAppSettingsPage
+import com.vauth.foxyvpn.ui.settings.RoutingSettingsPage
+import com.vauth.foxyvpn.ui.settings.SettingsHubScreen
+import com.vauth.foxyvpn.ui.settings.VpnSettingsPage
 import com.vauth.foxyvpn.ui.theme.AppearanceController
+import com.vauth.foxyvpn.ui.theme.navEnter
+import com.vauth.foxyvpn.ui.theme.navExit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,6 +58,37 @@ object FoxyRoutes {
     // Fork additions.
     const val ACCOUNTS = "accounts"
     const val ADD_ACCOUNT = "add_account"
+    // Overhaul (B1): settings sub-pages, one route per hub tile.
+    const val SETTINGS_INTERFACE = "settings/interface"
+    const val SETTINGS_NAVBAR = "settings/navbar"
+    const val SETTINGS_VPN = "settings/vpn"
+    const val SETTINGS_DNS = "settings/dns"
+    const val SETTINGS_ROUTING = "settings/routing"
+    const val SETTINGS_PER_APP = "settings/per-app"
+    const val SETTINGS_CORE = "settings/core"
+    const val SETTINGS_MODE = "settings/mode"
+    const val SETTINGS_MUX = "settings/mux"
+    const val SETTINGS_FRAGMENT = "settings/fragment"
+    const val SETTINGS_ADVANCED = "settings/advanced"
+    const val SETTINGS_ANTIBLOCK = "settings/antiblock"
+    const val SETTINGS_ABOUT = "settings/about"
+}
+
+/** Hub tile key → its settings sub-page route. */
+fun settingsRouteFor(key: String): String = when (key) {
+    BentoTiles.APPEARANCE -> FoxyRoutes.SETTINGS_INTERFACE
+    BentoTiles.VPN -> FoxyRoutes.SETTINGS_VPN
+    BentoTiles.DNS -> FoxyRoutes.SETTINGS_DNS
+    BentoTiles.ROUTING -> FoxyRoutes.SETTINGS_ROUTING
+    BentoTiles.PER_APP -> FoxyRoutes.SETTINGS_PER_APP
+    BentoTiles.CORE -> FoxyRoutes.SETTINGS_CORE
+    BentoTiles.MODE -> FoxyRoutes.SETTINGS_MODE
+    BentoTiles.ACCOUNTS -> FoxyRoutes.ACCOUNTS
+    BentoTiles.MUX -> FoxyRoutes.SETTINGS_MUX
+    BentoTiles.FRAGMENT -> FoxyRoutes.SETTINGS_FRAGMENT
+    BentoTiles.ADVANCED -> FoxyRoutes.SETTINGS_ADVANCED
+    BentoTiles.ANTI_BLOCK -> FoxyRoutes.SETTINGS_ANTIBLOCK
+    else -> FoxyRoutes.SETTINGS_ABOUT
 }
 
 @Composable
@@ -98,7 +147,52 @@ fun FoxyNavGraph(
             }
         }
     }
-    NavHost(navController = navController, startDestination = FoxyRoutes.SPLASH) {
+    // Global sign-out (v1 fork semantics). Overhaul (B1, DEV-13):
+    // invoked from the Accounts page; the state lives here so the
+    // epoch guard and cleanup stay identical to the old settings
+    // screen's button.
+    fun performSignOut() {
+        if (signingOut) return
+        signingOut = true
+        val epoch = container.tokenStore.sessionEpoch
+        onDisconnect()
+        sessionScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    check(container.tokenStore.clearIfCurrent(epoch)) {
+                        "Session changed. Try signing out again."
+                    }
+                    container.accountRepository.onGlobalSignOut()
+                    com.vauth.foxyvpn.data.ControlPlaneHttp.cookieJar.clear()
+                    container.settingsStore.clearAccountSession()
+                    container.proxyStateStore.clear()
+                }
+                android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                navController.navigate(FoxyRoutes.LOGIN) {
+                    popUpTo(0) { inclusive = true }
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.widget.Toast.makeText(
+                    context,
+                    error.message ?: "Could not clear the session",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            } finally {
+                signingOut = false
+            }
+        }
+    }
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    NavHost(
+        navController = navController,
+        startDestination = FoxyRoutes.SPLASH,
+        enterTransition = { navEnter(appearance.screenTransition, appearance.reduceMotion, forward = true, rtl = rtl) },
+        exitTransition = { navExit(appearance.screenTransition, appearance.reduceMotion, forward = true, rtl = rtl) },
+        popEnterTransition = { navEnter(appearance.screenTransition, appearance.reduceMotion, forward = false, rtl = rtl) },
+        popExitTransition = { navExit(appearance.screenTransition, appearance.reduceMotion, forward = false, rtl = rtl) },
+    ) {
         composable(FoxyRoutes.SPLASH) {
             SplashScreen(
                 authRepository = container.authRepository,
@@ -151,6 +245,7 @@ fun FoxyNavGraph(
                 onOpenServers = { navController.navigate(FoxyRoutes.SERVERS) },
                 onOpenSettings = { navController.navigate(FoxyRoutes.SETTINGS) },
                 onOpenAccounts = { navController.navigate(FoxyRoutes.ACCOUNTS) },
+                onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
             )
         }
         composable(FoxyRoutes.SERVERS) {
@@ -170,16 +265,94 @@ fun FoxyNavGraph(
             )
         }
         composable(FoxyRoutes.SETTINGS) {
+            SettingsHubScreen(
+                settingsStore = container.settingsStore,
+                appearance = appearance,
+                accountStore = container.accountStore,
+                onOpenPage = { key -> navController.navigate(settingsRouteFor(key)) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_INTERFACE) {
+            InterfacePage(
+                appearance = appearance,
+                settingsStore = container.settingsStore,
+                onOpenNavBar = { navController.navigate(FoxyRoutes.SETTINGS_NAVBAR) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_NAVBAR) {
+            NavBarPage(
+                appearance = appearance,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_VPN) {
+            VpnSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_DNS) {
+            DnsSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_ROUTING) {
+            RoutingSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_PER_APP) {
+            PerAppSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_CORE) {
+            CoreSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_MODE) {
+            ModeSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_MUX) {
+            MuxSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_FRAGMENT) {
+            FragmentSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_ADVANCED) {
+            AdvancedSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_ANTIBLOCK) {
+            AntiBlockSettingsPage(
+                settingsStore = container.settingsStore,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(FoxyRoutes.SETTINGS_ABOUT) {
             val app = context.applicationContext as? com.vauth.foxyvpn.FoxyVpnApp
             val updater = app?.appUpdater
             var autoUpdates by remember { mutableStateOf(updater?.automaticChecks ?: false) }
-            SettingsScreen(
-                settingsStore = container.settingsStore,
-                appearance = appearance,
-                hasSession = container.tokenStore.loadAuth() != null,
-                onOpenAccounts = { navController.navigate(FoxyRoutes.ACCOUNTS) },
+            AboutSettingsPage(
                 onOpenLogs = { navController.navigate(FoxyRoutes.LOGS) },
-                signOutInProgress = signingOut,
                 onCheckForUpdates = {
                     updater?.showPrompt()
                     updater?.check()
@@ -188,43 +361,6 @@ fun FoxyNavGraph(
                 onAutomaticUpdatesChange = { enabled ->
                     updater?.automaticChecks = enabled
                     autoUpdates = enabled
-                },
-                onSignOut = signOut@{
-                    if (signingOut) return@signOut
-                    signingOut = true
-                    val epoch = container.tokenStore.sessionEpoch
-                    onDisconnect()
-                    sessionScope.launch {
-                        try {
-                            withContext(Dispatchers.IO) {
-                                check(container.tokenStore.clearIfCurrent(epoch)) {
-                                    "Session changed. Try signing out again."
-                                }
-                                // Fork addition: the explicit global
-                                // sign-out clears the account list too
-                                // (v1 fork semantics); per-account removal
-                                // lives on the accounts screen.
-                                container.accountRepository.onGlobalSignOut()
-                                com.vauth.foxyvpn.data.ControlPlaneHttp.cookieJar.clear()
-                                container.settingsStore.clearAccountSession()
-                                container.proxyStateStore.clear()
-                            }
-                            android.webkit.CookieManager.getInstance().removeAllCookies(null)
-                            navController.navigate(FoxyRoutes.LOGIN) {
-                                popUpTo(0) { inclusive = true }
-                            }
-                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            android.widget.Toast.makeText(
-                                context,
-                                error.message ?: "Could not clear the session",
-                                android.widget.Toast.LENGTH_LONG,
-                            ).show()
-                        } finally {
-                            signingOut = false
-                        }
-                    }
                 },
                 onBack = { navController.popBackStack() },
             )
@@ -304,6 +440,13 @@ fun FoxyNavGraph(
                 },
                 onAddAccount = { navController.navigate(FoxyRoutes.ADD_ACCOUNT) },
                 onBack = { navController.popBackStack() },
+                onSignOut =
+                    if (container.tokenStore.loadAuth() != null) {
+                        { performSignOut() }
+                    } else {
+                        null
+                    },
+                signOutInProgress = signingOut,
             )
         }
         composable(FoxyRoutes.ADD_ACCOUNT) {

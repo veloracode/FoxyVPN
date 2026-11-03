@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -55,7 +56,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.vauth.foxyvpn.R
 import com.vauth.foxyvpn.data.FxaAuthRepository
 import com.vauth.foxyvpn.data.GUARDIAN_ENDPOINT_DEFAULT
 import com.vauth.foxyvpn.data.GuardianClient
@@ -73,6 +76,10 @@ fun AccountScreen(
     onRemoveAccount: (VpnAccount) -> Unit,
     onAddAccount: () -> Unit,
     onBack: () -> Unit,
+    // Overhaul (B1, DEV-13): the global sign-out lives on this page
+    // (it used to sit at the bottom of the old settings list).
+    onSignOut: (() -> Unit)? = null,
+    signOutInProgress: Boolean = false,
 ) {
     // Fork screen, re-layered on the v2 port's storage split: the account
     // list lives in AccountStore; exactly one account is ACTIVE — its
@@ -200,6 +207,28 @@ fun AccountScreen(
                     }
                     item { Spacer(Modifier.height(16.dp)) }
                 }
+            }
+
+            if (onSignOut != null) {
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = onSignOut,
+                    enabled = !signOutInProgress,
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Logout,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.settings_sign_out))
+                }
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
