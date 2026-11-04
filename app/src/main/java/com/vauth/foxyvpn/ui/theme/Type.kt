@@ -107,8 +107,7 @@ private fun TextStyle.emphasized(): TextStyle {
         FontWeight.SemiBold -> FontWeight.Bold
         else -> FontWeight.Bold
     }
-    val tighter = (letterSpacing.value - 0.2f).sp
-    return copy(fontWeight = heavier, letterSpacing = tighter)
+    return copy(fontWeight = heavier, letterSpacing = emphasizedTracking(letterSpacing))
 }
 
 private fun expressiveTypography(

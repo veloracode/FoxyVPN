@@ -164,16 +164,12 @@ internal fun RowBody(
                 title,
                 style = MaterialTheme.typography.bodyLargeEmphasized,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
             )
             if (!description.isNullOrBlank()) {
                 Text(
                     description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -211,16 +207,12 @@ fun SettingsSwitchRow(
                 title,
                 style = MaterialTheme.typography.bodyLargeEmphasized,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
             )
             if (!description.isNullOrBlank()) {
                 Text(
                     description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -347,9 +339,28 @@ private fun ChoiceChips(
     }
 }
 
-/** Whether [options] fit the connected segmented control. */
-private fun fitsConnected(options: List<String>): Boolean =
-    options.size in 2..4 && options.sumOf { it.length } <= 34 && options.all { it.length <= 13 }
+/**
+ * Whether [options] fit the connected segmented control.
+ *
+ * Language-aware (rescue, v1.1.1): the character-count budget is a
+ * width proxy, and it overestimates what fits for Persian — Arabic
+ * glyphs run wide and the segmented control is a fixed-height,
+ * equal-segment strip with single-line ellipsized labels. In RTL the
+ * budget is stricter, so Persian option sets fall back to the
+ * wrapping chip flow instead of being squeezed into segments (part
+ * of the v1.1 "words merged" verdict).
+ */
+@Composable
+private fun fitsConnected(options: List<String>): Boolean {
+    val rtl = androidx.compose.ui.platform.LocalLayoutDirection.current ==
+        androidx.compose.ui.unit.LayoutDirection.Rtl
+    val maxCount = if (rtl) 3 else 4
+    val maxTotal = if (rtl) 26 else 34
+    val maxEach = if (rtl) 10 else 13
+    return options.size in 2..maxCount &&
+        options.sumOf { it.length } <= maxTotal &&
+        options.all { it.length <= maxEach }
+}
 
 @Composable
 fun SettingsChoiceRow(
@@ -373,16 +384,12 @@ fun SettingsChoiceRow(
                 title,
                 style = MaterialTheme.typography.bodyLargeEmphasized,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
             )
             if (!description.isNullOrBlank()) {
                 Text(
                     description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
