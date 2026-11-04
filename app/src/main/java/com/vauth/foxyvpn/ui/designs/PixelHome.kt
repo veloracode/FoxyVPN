@@ -1,7 +1,14 @@
 package com.vauth.foxyvpn.ui.designs
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -13,8 +20,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,6 +31,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,6 +53,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -235,7 +247,7 @@ private fun PixelHeroCard(
     val live = ui.connectState == BentoConnectState.Connected
     val searching = ui.connectState == BentoConnectState.Connecting
     val container by animateColorAsState(
-        if (live) cs.primaryContainer else cs.surfaceContainerHigh,
+        if (live) cs.primaryContainer else cs.surfaceContainer,
         tween(450), label = "pixel-hero-container",
     )
     val ink by animateColorAsState(
@@ -249,29 +261,57 @@ private fun PixelHeroCard(
     var details by remember { mutableStateOf(false) }
     val onStatusTap = rememberStatusTaps(onLaser)
 
-    Column(
+    BoxWithConstraints(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(44.dp))
-            .background(container)
-            .padding(horizontal = 18.dp, vertical = 22.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .background(container),
     ) {
+        // Door sizing follows the reference card: the door is a
+        // fraction of the card and shrinks when the details panel
+        // opens, so the facts take the stage (rescue B).
+        val open = live && details
+        val full = minOf(maxWidth * 0.52f, 208.dp).coerceIn(116.dp, 208.dp)
+        val small = minOf(maxWidth * 0.26f, 100.dp).coerceIn(64.dp, 100.dp)
+        val door by animateDpAsState(
+            if (open) small else full,
+            spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
+            label = "pixel-door-size",
+        )
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 340.dp)
+                .padding(horizontal = 18.dp, vertical = 22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
         PixelDoor(
             state = ui.connectState,
             animate = animate,
             celebrate = celebrate,
+            doorSize = door,
             onTap = onToggle,
             onLongPress = onLongPress,
         )
         Spacer(Modifier.height(16.dp))
-        Text(
-            connectStatusText(ui.connectState, ui.error),
-            style = MaterialTheme.typography.headlineSmall,
-            color = ink,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.clickable(role = Role.Button, onClick = onStatusTap),
-        )
+        AnimatedContent(
+            targetState = ui.connectState,
+            transitionSpec = {
+                (fadeIn(tween(280)) + slideInVertically { it / 3 }) togetherWith
+                    fadeOut(tween(160))
+            },
+            label = "pixel-state",
+        ) { state ->
+            Text(
+                connectStatusText(state, ui.error),
+                style = MaterialTheme.typography.headlineMediumEmphasized,
+                color = ink,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                modifier = Modifier.clickable(role = Role.Button, onClick = onStatusTap),
+            )
+        }
         Spacer(Modifier.height(8.dp))
         when {
             ui.connectState == BentoConnectState.Idle -> Text(
@@ -297,9 +337,10 @@ private fun PixelHeroCard(
                 PixelFacts(ui = ui, ink = ink, sub = sub, onToggleDetails = { details = !details })
                 if (details) {
                     Spacer(Modifier.height(10.dp))
-                    PixelDetails(ui = ui, sub = sub, onRefreshInfo = onRefreshInfo)
+                    PixelDetails(ui = ui, sub = sub, live = live, onRefreshInfo = onRefreshInfo)
                 }
             }
+        }
         }
     }
 }
@@ -310,6 +351,7 @@ private fun PixelDoor(
     state: BentoConnectState,
     animate: Boolean,
     celebrate: Int,
+    doorSize: androidx.compose.ui.unit.Dp,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
 ) {
@@ -318,36 +360,75 @@ private fun PixelDoor(
     val searching = state == BentoConnectState.Connecting
     val session = rememberLiveSession(live)
 
-    // Morph progress Cookie12Sided (idle) -> SoftBurst (connected).
-    val morphProgress by animateFloatAsState(
-        if (live) 1f else 0f,
-        spring(dampingRatio = 0.6f, stiffness = 260f), label = "pixel-door-morph",
+    // While searching, the door cycles the reference's search shapes
+    // (one step every 0.72 s); connected settles on SoftBurst, idle
+    // on Cookie12Sided. Target changes morph from the current polygon
+    // with the reference spring; press feedback is a 0.9 squash with
+    // no ripple (rescue B).
+    var step by remember { mutableIntStateOf(0) }
+    LaunchedEffect(searching, animate) {
+        if (!searching || !animate) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(720)
+            step++
+        }
+    }
+    val target: androidx.graphics.shapes.RoundedPolygon = when {
+        live -> MaterialShapes.SoftBurst
+        searching -> SearchShapes[step % SearchShapes.size]
+        else -> MaterialShapes.Cookie12Sided
+    }
+    var from by remember {
+        mutableStateOf<androidx.graphics.shapes.RoundedPolygon>(MaterialShapes.Cookie12Sided)
+    }
+    var to by remember {
+        mutableStateOf<androidx.graphics.shapes.RoundedPolygon>(MaterialShapes.Cookie12Sided)
+    }
+    var progress by remember { mutableFloatStateOf(1f) }
+    LaunchedEffect(target) {
+        if (target === to) return@LaunchedEffect
+        from = if (progress >= 0.5f) to else from
+        to = target
+        progress = 0f
+        androidx.compose.animation.core.animate(
+            0f, 1f,
+            animationSpec = spring(dampingRatio = 0.6f, stiffness = 260f),
+        ) { v, _ -> progress = v }
+    }
+    val morph = remember(from, to) { androidx.graphics.shapes.Morph(from, to) }
+
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val squash by animateFloatAsState(
+        if (pressed) 0.9f else 1f,
+        spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMedium),
+        label = "pixel-door-squash",
     )
-    // Slow rotation of the session gradient (120 s per revolution,
-    // DESIGN-SYSTEM §8.4), only while the budget allows motion.
+    // Rotation rates follow the reference clock: fast sweep while
+    // searching (150 deg/s), a slow 9 deg/s drift while connected.
     val turn = if (animate) {
         val transition = rememberInfiniteTransition(label = "pixel-door-turn")
         val value by transition.animateFloat(
             0f, 360f,
-            infiniteRepeatable(tween(if (searching) 2_400 else 120_000, easing = LinearEasing)),
+            infiniteRepeatable(tween(if (searching) 2_400 else 40_000, easing = LinearEasing)),
             label = "pixel-door-angle",
         )
         value
     } else {
         0f
     }
-    val brush: Brush = when {
-        searching -> SessionGradients.brushFor(SessionGradients.connectingStops)
-        live -> SessionGradients.brushFor(SessionGradients.connectedStops(session.sessionKey))
-        else -> SessionGradients.idle
-    }
-    val morph = remember {
-        androidx.graphics.shapes.Morph(MaterialShapes.Cookie12Sided, MaterialShapes.SoftBurst)
-    }
+    val work = remember { androidx.compose.ui.graphics.Path() }
+    val density = androidx.compose.ui.platform.LocalDensity.current
     Box(
         Modifier
-            .size(168.dp)
+            .size(doorSize)
+            .graphicsLayer {
+                scaleX = squash
+                scaleY = squash
+            }
             .combinedClickable(
+                interactionSource = source,
+                indication = null,
                 role = Role.Button,
                 onClick = onTap,
                 onLongClick = onLongPress,
@@ -355,7 +436,20 @@ private fun PixelDoor(
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val path = morph.toPath(morphProgress.coerceIn(0f, 1f), androidx.compose.ui.graphics.Path())
+            val brush: Brush = when {
+                searching -> Brush.sweepGradient(
+                    listOf(
+                        SessionGradients.Violet,
+                        SessionGradients.HotPink,
+                        SessionGradients.Violet,
+                    ),
+                    center = center,
+                )
+                live -> SessionGradients.brushFor(SessionGradients.connectedStops(session.sessionKey))
+                else -> SessionGradients.idle
+            }
+            work.rewind()
+            val path = morph.toPath(progress.coerceIn(0f, 1f), work)
             path.transform(
                 androidx.compose.ui.graphics.Matrix().apply { scale(size.width, size.height) },
             )
@@ -371,21 +465,35 @@ private fun PixelDoor(
         if (live) {
             Text(
                 formatElapsed(session.elapsedSeconds),
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineSmallEmphasized.copy(
+                    fontSize = with(density) { (doorSize * 0.14f).toSp() },
+                ),
                 color = cs.onPrimary,
-                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
             )
         } else {
             Icon(
                 Icons.Filled.PowerSettingsNew,
                 contentDescription = if (searching) s("Cancel") else s("Connect"),
                 tint = cs.onPrimary,
-                modifier = Modifier.size(52.dp),
+                modifier = Modifier.size(doorSize * 0.32f),
             )
         }
         ParticleBurst(trigger = celebrate, modifier = Modifier.fillMaxSize())
     }
 }
+
+/** The reference's searching cycle for the door (MaterialShapes set). */
+private val SearchShapes: List<androidx.graphics.shapes.RoundedPolygon> = listOf(
+    MaterialShapes.SoftBurst,
+    MaterialShapes.Cookie9Sided,
+    MaterialShapes.Pentagon,
+    MaterialShapes.Pill,
+    MaterialShapes.Sunny,
+    MaterialShapes.Cookie4Sided,
+    MaterialShapes.Oval,
+)
 
 @Composable
 private fun PixelFacts(
@@ -424,9 +532,10 @@ private fun FactText(
 private fun PixelDetails(
     ui: HomeUiState,
     sub: androidx.compose.ui.graphics.Color,
+    live: Boolean,
     onRefreshInfo: () -> Unit,
 ) {
-    val session = rememberLiveSession(true)
+    val session = rememberLiveSession(live)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         ui.active?.detail?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = sub)

@@ -1,6 +1,5 @@
 package com.vauth.foxyvpn.ui.designs
 
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -22,10 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,12 +29,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.vauth.foxyvpn.ui.bento.BentoConnectState
 import com.vauth.foxyvpn.ui.bento.HomeUiState
 import com.vauth.foxyvpn.ui.bento.formatElapsed
@@ -86,7 +84,13 @@ fun OldHome(
     val scroll = rememberScrollState()
     val heroIsControl = appearance.connectButtonStyle == ConnectButtonStyle.Hero
 
+    val backdropSession = rememberLiveSession(live)
     Box(modifier.fillMaxSize().background(cs.surface)) {
+        ConnectingBackdrop(
+            state = ui.connectState,
+            sessionKey = backdropSession.sessionKey,
+            animate = animate,
+        )
         Column(Modifier.fillMaxSize().padding(contentPadding)) {
             Column(
                 Modifier
@@ -215,6 +219,71 @@ fun OldHome(
     }
 }
 
+/**
+ * Full-screen backdrop of the Old design (rescue B): a vertical
+ * session-gradient wash whose intensity follows the connection
+ * state, with four rings expanding from the hero's center while
+ * motion is allowed. Idle draws nothing. Structure follows the
+ * reference's ConnectingBackdrop; colors are our SessionGradients.
+ */
+@Composable
+private fun ConnectingBackdrop(
+    state: BentoConnectState,
+    sessionKey: Long,
+    animate: Boolean,
+) {
+    val intensity by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = when (state) {
+            BentoConnectState.Connecting -> 0.72f
+            BentoConnectState.Connected -> 1f
+            BentoConnectState.Disconnecting -> 0.35f
+            else -> 0f
+        },
+        animationSpec = androidx.compose.animation.core.tween(
+            durationMillis = 900,
+            easing = androidx.compose.animation.core.FastOutSlowInEasing,
+        ),
+        label = "old-backdrop-intensity",
+    )
+    val pulse = if (animate && state != BentoConnectState.Idle && state != BentoConnectState.Error) {
+        val transition = rememberInfiniteTransition(label = "old-backdrop-life")
+        val value by transition.animateFloat(
+            0f, 1f,
+            infiniteRepeatable(
+                androidx.compose.animation.core.tween(2600),
+                androidx.compose.animation.core.RepeatMode.Restart,
+            ),
+            label = "old-backdrop-pulse",
+        )
+        value
+    } else {
+        0f
+    }
+    val stops = if (state == BentoConnectState.Connected) {
+        SessionGradients.connectedStops(sessionKey)
+    } else {
+        SessionGradients.connectingStops
+    }
+    androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+        if (intensity <= 0.002f) return@Canvas
+        drawRect(
+            brush = Brush.verticalGradient(colors = stops, startY = 0f, endY = size.height),
+            alpha = 0.9f * intensity,
+        )
+        val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height * 0.42f)
+        val ringCount = 4
+        for (i in 0 until ringCount) {
+            val p = (pulse + i.toFloat() / ringCount) % 1f
+            drawCircle(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.14f * (1f - p) * intensity),
+                radius = size.height * 0.06f + p * size.height * 0.42f,
+                center = center,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f),
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun OldHero(
@@ -233,55 +302,97 @@ private fun OldHero(
         live -> SessionGradients.brushFor(SessionGradients.connectedStops(session.sessionKey))
         else -> SessionGradients.idle
     }
-    val turn = if (animate && searching) {
-        val transition = rememberInfiniteTransition(label = "old-hero-turn")
+    // The hero is a morphing blob (Cookie9Sided -> SoftBurst as the
+    // tunnel comes up) that breathes while connected — the reference
+    // Old hero's actual structure, replacing the flat circle + fake
+    // rotating disc shipped in B2 (rescue B).
+    val morphProgress by androidx.compose.animation.core.animateFloatAsState(
+        if (live) 1f else 0f,
+        androidx.compose.animation.core.spring(dampingRatio = 0.75f, stiffness = 280f),
+        label = "old-hero-morph",
+    )
+    val morph = androidx.compose.runtime.remember {
+        androidx.graphics.shapes.Morph(
+            androidx.compose.material3.MaterialShapes.Cookie9Sided,
+            androidx.compose.material3.MaterialShapes.SoftBurst,
+        )
+    }
+    val breathe = if (animate && live) {
+        val transition = rememberInfiniteTransition(label = "old-hero-breathe")
         val value by transition.animateFloat(
-            0f, 360f, infiniteRepeatable(tween(2_600, easing = LinearEasing)),
-            label = "old-hero-angle",
+            0.97f, 1.04f,
+            infiniteRepeatable(
+                androidx.compose.animation.core.tween(2800),
+                androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "old-hero-breathe-v",
         )
         value
     } else {
-        0f
+        1f
     }
     val click = if (isControl) {
-        Modifier.combinedClickable(role = Role.Button, onClick = onToggle, onLongClick = onLongPress)
+        Modifier.combinedClickable(
+            interactionSource = androidx.compose.runtime.remember {
+                androidx.compose.foundation.interaction.MutableInteractionSource()
+            },
+            indication = null,
+            role = Role.Button,
+            onClick = onToggle,
+            onLongClick = onLongPress,
+        )
     } else {
         Modifier
     }
+    val work = androidx.compose.runtime.remember { androidx.compose.ui.graphics.Path() }
     Box(
-        Modifier.size(184.dp).clip(CircleShape).background(brush).then(click),
+        Modifier
+            .size(184.dp)
+            .graphicsLayer {
+                scaleX = breathe
+                scaleY = breathe
+            }
+            .drawBehind {
+                work.rewind()
+                val path = morph.toPath(morphProgress.coerceIn(0f, 1f), work)
+                path.transform(
+                    androidx.compose.ui.graphics.Matrix().apply { scale(size.width, size.height) },
+                )
+                val bounds = path.getBounds()
+                path.translate(
+                    androidx.compose.ui.geometry.Offset(
+                        size.width / 2f - bounds.center.x,
+                        size.height / 2f - bounds.center.y,
+                    ),
+                )
+                drawPath(path, brush)
+            }
+            .then(click),
         contentAlignment = Alignment.Center,
     ) {
-        if (live) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    formatElapsed(session.elapsedSeconds),
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = cs.onPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    s("Connected"),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = cs.onPrimary.copy(alpha = 0.85f),
-                )
-            }
-        } else {
-            Icon(
-                Icons.Filled.PowerSettingsNew,
-                contentDescription = if (searching) s("Cancel") else s("Connect"),
-                tint = cs.onPrimary,
-                modifier = Modifier.size(58.dp),
+        when {
+            searching -> androidx.compose.material3.ContainedLoadingIndicator(
+                modifier = Modifier.size(72.dp),
+                containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                indicatorColor = androidx.compose.ui.graphics.Color.White,
             )
-        }
-        if (searching) {
-            // Rotating arc accent while connecting (MotionBudget-gated by `animate`).
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(6.dp)
-                    .clip(CircleShape)
-                    .background(cs.onPrimary.copy(alpha = 0.10f + 0.05f * kotlin.math.sin(turn * Math.PI / 180.0).toFloat())),
+            live -> Text(
+                formatElapsed(session.elapsedSeconds),
+                style = MaterialTheme.typography.headlineLarge,
+                fontSize = 36.sp,
+                color = androidx.compose.ui.graphics.Color.White,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
+            )
+            else -> Text(
+                "F",
+                style = MaterialTheme.typography.displayLarge,
+                fontSize = 58.sp,
+                color = androidx.compose.ui.graphics.Color.White,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
