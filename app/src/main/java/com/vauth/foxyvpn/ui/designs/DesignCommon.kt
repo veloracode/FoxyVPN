@@ -42,6 +42,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,54 +86,63 @@ private const val BURST_TAPS = 3
 private const val TAP_WINDOW_MS = 1_200L
 private const val SPARK_POINTS = 24
 
-/** Live session values, collected leaf-locally (rates, totals, elapsed). */
-class LiveSession internal constructor(
-    val downBps: Long,
-    val upBps: Long,
-    val sessionBytes: Long,
-    val elapsedSeconds: Int,
-    /** Stable per connection; keys the session gradient palette. */
-    val sessionKey: Long,
-    val downHistory: List<Float>,
-    val upHistory: List<Float>,
-)
-
 @Composable
 fun rememberLiveSession(live: Boolean): LiveSession {
-    val stats by FoxyVpnService.vpnLiveStats.collectAsState()
-    val connectedAt by FoxyVpnService.connectedAtElapsedMs.collectAsState()
-    var elapsed by remember { mutableIntStateOf(0) }
-    LaunchedEffect(connectedAt, live) {
-        val started = connectedAt
+    // No `by` dereferences of the per-second producers in this
+    // function: composition here must not subscribe to them. All
+    // mapping/appending happens inside effects via snapshotFlow.
+    val rawStats = FoxyVpnService.vpnLiveStats.collectAsState()
+    val connectedAt = FoxyVpnService.connectedAtElapsedMs.collectAsState()
+    val statsState = remember { mutableStateOf(SessionStats()) }
+    val elapsedState = remember { mutableIntStateOf(0) }
+    val downHistoryState = remember { mutableStateOf<List<Float>>(emptyList()) }
+    val upHistoryState = remember { mutableStateOf<List<Float>>(emptyList()) }
+
+    LaunchedEffect(live) {
+        if (!live) {
+            statsState.value = SessionStats()
+            downHistoryState.value = emptyList()
+            upHistoryState.value = emptyList()
+        } else {
+            snapshotFlow { rawStats.value }.collect { st ->
+                val mapped = SessionStats(
+                    rxBps = st.rxRateBytesPerSec,
+                    txBps = st.txRateBytesPerSec,
+                    sessionBytes = st.sessionBytes,
+                )
+                statsState.value = mapped
+                downHistoryState.value =
+                    (downHistoryState.value + mapped.rxBps.toFloat()).takeLast(SPARK_POINTS)
+                upHistoryState.value =
+                    (upHistoryState.value + mapped.txBps.toFloat()).takeLast(SPARK_POINTS)
+            }
+        }
+    }
+
+    // Elapsed ticker. The key reads connectedAt in composition, which
+    // subscribes this scope to connect/disconnect moments only (the
+    // intended granularity); the per-second writes land in state that
+    // only the displaying leaves read.
+    val started = connectedAt.value
+    LaunchedEffect(started, live) {
         if (live && started != null) {
             while (true) {
-                elapsed =
+                elapsedState.value =
                     ((android.os.SystemClock.elapsedRealtime() - started) / 1000)
                         .toInt().coerceAtLeast(0)
                 delay(1000)
             }
         }
-        if (!live) elapsed = 0
+        if (!live) elapsedState.value = 0
     }
-    var downHistory by remember { mutableStateOf(emptyList<Float>()) }
-    var upHistory by remember { mutableStateOf(emptyList<Float>()) }
-    LaunchedEffect(stats, live) {
-        if (!live) {
-            downHistory = emptyList()
-            upHistory = emptyList()
-        } else {
-            downHistory = (downHistory + stats.rxRateBytesPerSec.toFloat()).takeLast(SPARK_POINTS)
-            upHistory = (upHistory + stats.txRateBytesPerSec.toFloat()).takeLast(SPARK_POINTS)
-        }
-    }
+
     return LiveSession(
-        downBps = if (live) stats.rxRateBytesPerSec else 0,
-        upBps = if (live) stats.txRateBytesPerSec else 0,
-        sessionBytes = if (live) stats.sessionBytes else 0,
-        elapsedSeconds = elapsed,
-        sessionKey = connectedAt ?: 0L,
-        downHistory = downHistory,
-        upHistory = upHistory,
+        live = live,
+        stats = statsState,
+        connectedAt = connectedAt,
+        elapsed = elapsedState,
+        downHistoryState = downHistoryState,
+        upHistoryState = upHistoryState,
     )
 }
 

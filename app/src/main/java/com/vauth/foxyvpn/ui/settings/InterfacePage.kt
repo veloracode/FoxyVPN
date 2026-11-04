@@ -955,7 +955,11 @@ private fun ScaleRow(appearance: AppearanceController) {
 @Composable
 private fun TransitionPreview(style: ScreenTransition, reduceMotion: Boolean) {
     var index by remember { mutableStateOf(0) }
+    // The preview only animates when motion is allowed; with reduce
+    // motion on it renders one static frame instead of ticking state
+    // (and recomposing this section) every 1.6 s forever (rescue A).
     LaunchedEffect(style, reduceMotion) {
+        if (reduceMotion) return@LaunchedEffect
         while (true) {
             delay(1600)
             index++
