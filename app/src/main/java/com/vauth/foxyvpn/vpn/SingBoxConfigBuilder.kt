@@ -118,6 +118,14 @@ object SingBoxConfigBuilder {
         val certificate = JSONObject().apply { put("store", "mozilla") }
         root.put("certificate", certificate)
 
+        // Block ads: active only when the toggle is on AND the bundled
+        // lists loaded. Computed here because both the dns block and
+        // the route block consume it. When inactive NOTHING below
+        // emits anything for the feature, keeping the generated
+        // config byte-identical to the pre-feature build (A3).
+        val adsActive =
+            settings.blockAds && adBlockLists != null && !adBlockLists.isEmpty
+
         val dns = JSONObject()
         val dnsServers = JSONArray()
 
@@ -164,6 +172,24 @@ object SingBoxConfigBuilder {
         dns.put("final", finalDnsTag)
         dns.put("strategy", if (settings.ipv6Enabled) "prefer_ipv4" else "ipv4_only")
         dns.put("disable_cache", false)
+        if (adsActive) {
+            // Rescue fix (v1.1.1): refuse ad domains at DNS, the one
+            // place a domain is visible in TUN mode. The B2 route-level
+            // reject alone could never fire — the router only sees
+            // destination IPs there. Proven against a real sing-box
+            // core: with this rule a listed domain returns REFUSED
+            // while control domains resolve normally (ads audit,
+            // 2026-11-03; re-verified on this builder's output).
+            dns.put(
+                "rules",
+                JSONArray().put(
+                    JSONObject().apply {
+                        put("rule_set", JSONArray().put(ADS_RULE_SET_TAG))
+                        put("action", "reject")
+                    }
+                ),
+            )
+        }
         root.put("dns", dns)
 
         val utlsFingerprint = settings.utlsFingerprint.identifier
@@ -374,12 +400,11 @@ object SingBoxConfigBuilder {
 
         root.put("outbounds", outbounds)
 
-        // Block ads (B2): active only when the toggle is on AND the
-        // bundled lists loaded. Otherwise NOTHING below emits anything,
-        // keeping the generated config byte-identical to the
-        // pre-feature build (criterion A3, proven by fixture diff).
-        val adsActive =
-            settings.blockAds && adBlockLists != null && !adBlockLists.isEmpty
+        // Block ads (B2 + v1.1.1 dns rule): adsActive is computed
+        // above, before the dns block. The route rule below still
+        // rejects domain-addressed flows that reach the router (e.g.
+        // via the local proxy); the DNS rule is what refuses ad
+        // domains for ordinary TUN traffic.
         val route =
             JSONObject().apply {
                 put(

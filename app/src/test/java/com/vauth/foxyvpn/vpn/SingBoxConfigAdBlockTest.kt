@@ -11,10 +11,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
- * A3 gate for Block ads (B2): the ONLY data-plane change in the whole
- * overhaul. OFF must be byte-identical to building without the feature
- * at all; ON must differ by exactly the inline rule-set plus one route
- * rule — nothing else in the generated config may move.
+ * A3 gate for Block ads (B2; DNS rule added in the v1.1.1 rescue):
+ * the ONLY data-plane change in the whole overhaul. OFF must be
+ * byte-identical to building without the feature at all; ON must
+ * differ by exactly the inline rule-set, one route rule, and one
+ * dns rule — nothing else in the generated config may move.
+ *
+ * The dns rule is the rescue fix: in TUN mode the router sees only
+ * destination IPs, so the route-level reject could never match a
+ * domain. The dns.rules reject refuses ad domains where domains are
+ * actually visible (proven at runtime against a real sing-box core,
+ * 2026-11-03 ads audit + re-verified on this builder output).
  */
 class SingBoxConfigAdBlockTest {
 
@@ -98,6 +105,24 @@ class SingBoxConfigAdBlockTest {
     }
 
     @Test
+    fun off_dnsHasNoRules() {
+        val off = JSONObject(build(blockAds = false, withLists = true))
+        assertFalse(off.getJSONObject("dns").has("rules"))
+    }
+
+    @Test
+    fun on_dnsRulesRefuseAdDomains() {
+        val on = JSONObject(build(blockAds = true, withLists = true))
+        val dnsRules = on.getJSONObject("dns").getJSONArray("rules")
+        assertEquals(1, dnsRules.length())
+        val rule = dnsRules.getJSONObject(0)
+        assertEquals("reject", rule.getString("action"))
+        val sets = rule.getJSONArray("rule_set")
+        assertEquals(1, sets.length())
+        assertEquals(SingBoxConfigBuilder.ADS_RULE_SET_TAG, sets.getString(0))
+    }
+
+    @Test
     fun on_addsExactlyTheRuleSetAndOneRule() {
         val off = JSONObject(build(blockAds = false, withLists = true))
         val on = JSONObject(build(blockAds = true, withLists = true))
@@ -122,7 +147,8 @@ class SingBoxConfigAdBlockTest {
         val offRules = offRoute.getJSONArray("rules")
         assertEquals(offRules.length() + 1, onRules.length())
 
-        // Remove the two additions; the trees must be identical.
+        // Remove the three additions; the trees must be identical.
+        on.getJSONObject("dns").remove("rules")
         onRoute.remove("rule_set")
         val kept = JSONArray()
         var removed = 0
